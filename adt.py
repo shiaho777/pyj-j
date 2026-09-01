@@ -60,14 +60,22 @@ class Graph:
     def _unop(self, verb, a):
         if not getattr(self, "_synced", False):
             self._sync_leaves()
-        _jdo(f"adnode=: {verb} {a.id}")
+        s = f"adnode=: {verb} {a.id}"
+        self._record(s)
+        _jdo(s)
         return Tensor(self._nodeid(), self)
 
     def _binop(self, verb, a, b):
         if not getattr(self, "_synced", False):
             self._sync_leaves()
-        _jdo(f"adnode=: {a.id} {verb} {b.id}")
+        s = f"adnode=: {a.id} {verb} {b.id}"
+        self._record(s)
+        _jdo(s)
         return Tensor(self._nodeid(), self)
+
+    def _record(self, sentence):
+        if getattr(self, "_recording", False):
+            self._rec_ops.append(sentence)
 
     def _nodeid(self):
         _jdo("adnid=: <:ADN")
@@ -109,6 +117,47 @@ class Graph:
         _jdo(f"gg=: ADGET {loss.id}")
         for t in self._leaves:
             t._grad = None   # invalidate cached grads after each backprop
+
+    def replay(self, builder):
+        """Record the graph once, then reuse it across steps.
+
+        Calls builder(self) and captures every op sentence issued. Returns
+        the loss Tensor. Afterwards call replay_step() each training step:
+        it pushes fresh leaf values, replays the recorded sentences (fast
+        path — no Python op dispatch), and refreshes node values so that
+        .grad works exactly as with the full build.
+        """
+        self._recording = True
+        self._rec_ops = []
+        self._srcname = f"adrsrc{id(self) % 100000}"
+        try:
+            loss = builder(self)
+        finally:
+            self._recording = False
+        self._replay_loss_id = loss.id
+        return loss
+
+    def replay_step(self):
+        """One step on the recorded tape: push leaf values, replay recorded
+        op sentences (batched into a single JDo via 0!:10), backprop.
+        Read .grad as usual."""
+        if not hasattr(self, "_rec_ops"):
+            raise RuntimeError("call replay(builder) first")
+        self._sync_leaves()
+        if not getattr(self, "_rec_batched", None):
+            LF = chr(10)
+            src = LF.join(self._rec_ops)
+            # ship the script as INT codepoints (LIT/char is read-only on the
+            # bridge); J side turns them back into a string with a.{~
+            codes = np.frombuffer(src.encode(), dtype=np.uint8).astype(np.int64)
+            pyj.set(f"{self._srcname}", codes)
+            _jdo(f"{self._srcname}_j=: a. {{~ {self._srcname}")
+            self._rec_batched = True
+        _jdo(f"0!:10 {self._srcname}_j")
+        _jdo(f"gg=: ADGET {self._replay_loss_id}")
+        for t in self._leaves:
+            t._grad = None
+        return self._replay_loss_id
 
 
 class Tensor:
@@ -248,6 +297,20 @@ class Tensor:
         order (axes after k shift left). VJP un-rotates the replicated grad."""
         c = self.g._iconst([int(k)])
         return self.g._binop("nrsumr", self, c)
+
+    def __lt__(self, other):
+        """elementwise B01 mask (no gradient — a non-differentiable gate)"""
+        if isinstance(other, Tensor):
+            return self.g._binop("nlt", self, other)
+        return self.g._binop("nlt", self, self.g._const(other))
+
+    def where(self, other):
+        """gate: self (B01-ish mask) * other — the selected branch value.
+        Gradient flows to `other` (masked), not to the mask. Compose
+        mask*a + (1-mask)*b from where/add/sub for a full if-then-else."""
+        if isinstance(other, Tensor):
+            return self.g._binop("nwhere", self, other)
+        return self.g._binop("nwhere", self, self.g._const(other))
 
     def relu(self):      return self.g._relup(self)
     def exp(self):       return self.g._unop("nexp", self)

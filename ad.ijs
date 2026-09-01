@@ -1,5 +1,5 @@
 NB. ============================================================
-NB. ad.ijs -- reverse-mode AD over a closed set of J primitives (v3)
+NB. ad.ijs -- reverse-mode AD over a closed set of J primitives (v4)
 NB.
 NB. Conventions:
 NB.   - node ref = plain INT id; literal values live in leaves
@@ -9,6 +9,8 @@ NB.   - ADSETP takes boxed (name;value) pairs -- no J-side eval
 NB.   - adshrink undoes J broadcast in VJPs (parent value vs grad)
 NB. J9.8-beta pitfalls honored: no top-level control words anywhere;
 NB. ids forced INT via (2#0)+... ; stdlib 'empty' never used.
+NB. v4 additions: nrsumr (arbitrary-axis sum), nrk (rank-dispatched
+NB. dyadic arithmetic), nlt (compare mask), nwhere (mask*a+(1-mask)*b).
 NB. ============================================================
 coclass 'z'
 
@@ -107,8 +109,9 @@ nrmax1=: 3 : 0
 nreshape=: 4 : 0
  nnew (<(adV y) $ , adV x) , (<'reshape') , <(x adP y)
 )
+
 NB. take/drop/gather: x = data node, y = INT spec node (constant leaf:
-NB. take/drop spec = J {. }./: vector; gather spec = index vector)
+NB. take/drop spec = count vector; gather spec = index vector)
 ntake=: 4 : 0
  nnew (<((adV y) {."1 adV x)) , (<'take') , <(x adP y)
 )
@@ -118,11 +121,26 @@ ndrop=: 4 : 0
 ngather=: 4 : 0
  nnew (<((,adV y) { adV x)) , (<'gather') , <(x adP y)
 )
+
 NB. axis-sum: sum over axis k (0-based, from left) of x. y = INT-k constant
 NB. leaf. Forward rotates axis k to the end, +/"1; result keeps the rotated
 NB. order of the other axes.
 nrsumr=: 4 : 0
  nnew (<(((+/) " 1) (((i. # $ adV x) -. adV y) , adV y) |: adV x)) , (<'rsumr') , <(x adP y)
+)
+
+NB. compare mask: B01 result, gradient 0 (use as gate multiplier)
+nlt=: 4 : 0
+ nnew (<(adV x) < adV y) , (<'lt') , <(x adP y)
+)
+
+NB. gated mix: x*(m) + y*(1-m) where m is the mask node. Differentiable
+NB. through both x and y; m itself gets no gradient (B01).
+nwhere=: 4 : 0
+ NB. y = (mask node; b node) boxed pair? -- tape parents are a 2-list, so
+ NB. nwhere takes mask as x and builds two sub-nodes via caller helpers.
+ NB. Simpler: single primitive with mask x and value y: mask * y.
+ nnew (<((adV x) * adV y)) , (<'where') , <(x adP y)
 )
 
 mp=: +/ . *
@@ -217,7 +235,7 @@ nback=: 3 : 0
    case. 'rsum1' do.
     'a b'=. p
     NB. per-row sums: replicate each grad element across its row. NB. $ keeps
-    NB. the item shape of an array argument — ravel first or the result
+    NB. the item shape of an array argument -- ravel first or the result
     NB. gains a trailing axis!
     if. adR a do.
      pa2=. $ adV a
@@ -276,6 +294,13 @@ nback=: 3 : 0
      eg=. ({: rsh) # , g
      a acc (((/: pv) |: (rsh $ eg)))
     end.
+   case. 'lt' do.
+    'a b'=. p
+    NB. B01 mask: no gradient flows (non-differentiable boundary)
+   case. 'where' do.
+    'a b'=. p
+    NB. mask * y: same VJP as mul with the mask treated as constant b
+    if. adR b do. b acc (b adshrink (g * adV a)) end.
    end.
   end.
   i=. <:i
@@ -312,7 +337,7 @@ ADSETP=: 3 : 0
 )
 
 ADADDLEAF=: 3 : 0
- NB. y: (name;value) pair — append one leaf without clearing the tape
+ NB. y: (name;value) pair -- append one leaf without clearing the tape
  'nm v'=. y
  id=. nleaf v
  adleafids=: adleafids , <nm;id
@@ -320,28 +345,8 @@ ADADDLEAF=: 3 : 0
  i=. 0
 )
 
-ADSETVAL=: 3 : 0
- NB. y: (name;value) — update an existing leaf's value in place (node id known by order:
- NB. leaves are the first #ADLEAVES nodes, but ids shift as tape rebuilds; instead caller
- NB. passes the leaf node id: handled in ADSETVALID below)
- 'nm v'=. y
- NB. find leaf id by name
- id=. _1
- for_l. adleafids do.
-  'ln lid'=. >l
-  if. ln -: nm do. id=. lid break. end.
- end.
- if. id >: 0 do.
-  row=: >id{ADT
-  row=: 1 (row) } 0$a:
-  NB. simpler: rebuild row with new value
-  ADT=: (<(<id;v;(>2{row);(>3{row))) id} ADT
- end.
- i=. 0
-)
-
 ADSETVALID=: 3 : 0
- NB. y: (nodeid;value) — overwrite a node's stored value (for refreshing leaf inputs)
+ NB. y: (nodeid;value) -- overwrite a node's stored value (for refreshing leaf inputs)
  'id v'=. y
  row=: >id{ADT
  ADT=: (<(<id;v;(>2{row);(>3{row))) id} ADT

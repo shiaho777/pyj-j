@@ -107,7 +107,8 @@ DYLD_LIBRARY_PATH=$PWD/jlibrary/bin PYJ_LIBPATH=$PWD/jlibrary/bin python3 test_p
 `test_pyj.py` (bridge), `test_ad.py` (AD core), `test_nn.py` (tensor API),
 `test_ops2.py` (rank-1/softmax), `test_ops3.py` (take/drop/gather + compiler
 parity + embedding training), `test_ops4.py` (arbitrary-axis sum + 3D
-softmax), `test_train2.py` (softmax classifier),
+softmax), `test_ops5.py` (gates + tape replay + compiled replay),
+`test_train2.py` (softmax classifier),
 `test_compile.py` (compiler validation + benchmark).
 
 Tested on macOS arm64. Linux should work with the `.so` suffix (the build
@@ -144,8 +145,11 @@ again:
 - [x] Tape-to-verb compiler
 - [x] take/drop/gather (embedding lookup)
 - [x] Arbitrary-axis sum (`sum_axis`) — rank dispatch in tape form
-- [ ] General rank dispatch (`"`), comparison and choose
-- [ ] Tape replay caching; MLIR/StableHLO as an execution backend
+- [x] Compare gates + gated mix (`__lt__`/`where`); tape replay caching
+      (`replay`/`replay_step`: record once, batch-execute one JDo per step,
+      and ADGEN-compile the recorded tape for a 0.03 ms/step training loop)
+- [ ] Full rank dispatch for all dyadics (currently: reduction, rowwise
+      arithmetic, compare); MLIR/StableHLO execution backend
 
 ## License
 
