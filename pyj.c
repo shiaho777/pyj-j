@@ -174,8 +174,12 @@ static PyObject* pyj_set(PyObject* self, PyObject* args)
   long long jtype = jt;
   long long shape[32];
   for (int i = 0; i < rank; i++) shape[i] = (long long)PyArray_DIM(arr, i);
-  /* JSetM takes double-indirect shape/data (io.c setterm: ((I*)*jshape)[i], (void*)*jdata) */
-  long long *pshape = rank ? shape : NULL;
+  /* JSetM takes double-indirect shape/data (io.c setterm: ((I*)*jshape)[i], (void*)*jdata).
+     Rank-0 must still pass a readable shape pointer: setterm's GAE/MCISH copies from the
+     source address even when the count is 0, and the AVX2 builds mask-load with a full
+     mask there — a NULL derefs. Point it at shape[0], which is never read for values. */
+  if (rank == 0) shape[0] = 0;
+  long long *pshape = shape;
   void* pdata = PyArray_DATA(arr);
   long long *ppdata_dummy = NULL;
   (void)ppdata_dummy;
