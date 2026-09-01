@@ -1,14 +1,18 @@
 # pyj
 
-Run the J language engine inside the Python process. numpy arrays cross into J
-without conversion, and the bridge layers a reverse-mode autodiff engine —
-written entirely in J — on top: tape recording, VJP rules, and a compiler that
-fuses a whole model into a single J verb.
+A few-megabyte **embeddable tensor kernel**: the J language engine, loaded
+in-process, used unmodified as the compute core — with reverse-mode autodiff,
+a tape compiler, and an MLIR export path living inside it. Python is the
+host; the kernel ships like SQLite, not like a language you write in.
 
-I built this to explore a question: array languages were designed for exactly
-the math that machine learning wants (implicit broadcasting, rank-polymorphic
-reduction, verbs that compose), so what gets unlocked if J sits *inside* the
-Python ecosystem instead of asking people to leave it?
+The bet in one line: a closed-set array language is a ready-made IR with a
+30-year-tuned interpreter attached, and that combination is more useful
+*embedded* than it ever was as a language. The full argument — the niche,
+the invariants, the success criteria — is in [VISION.md](VISION.md).
+
+Concretely: numpy arrays cross into J without conversion, and the bridge
+layers reverse-mode AD on top — tape recording, VJP rules, and a compiler
+that fuses a whole model into a single J verb.
 
 ```python
 import pyj, numpy as np
@@ -140,21 +144,34 @@ again:
 
 ## Roadmap
 
+Phase 1 — build the machine (done):
+
 - [x] Zero-copy numpy bridge
 - [x] Closed-set reverse-mode AD, gradchecked
 - [x] Tensor API, end-to-end training runs
-- [x] Tape-to-verb compiler
-- [x] take/drop/gather (embedding lookup)
-- [x] Arbitrary-axis sum (`sum_axis`) — rank dispatch in tape form
-- [x] Compare gates + gated mix (`__lt__`/`where`); tape replay caching
-      (`replay`/`replay_step`: record once, batch-execute one JDo per step,
-      and ADGEN-compile the recorded tape for a 0.03 ms/step training loop)
-- [x] MLIR backend: `adexport.py` exports the tape to func/arith/linalg/tensor
-      MLIR, lowers to LLVM IR via `mlir-opt`/`mlir-translate` and executes
-      natively — results bit-match the J engine's forward (test_mlir.py).
-      Not exported yet: take/drop/gather/reshape/transpose.
-- [ ] Full rank dispatch for all dyadics; StableHLO/IREE target with
-      autograd; feeding the exported module into a real MLIR runtime
+- [x] Tape-to-verb compiler (~180x vs the interpreted tape)
+- [x] take/drop/gather (embedding lookup); arbitrary-axis sum; compare
+      gates + gated mix; tape replay caching (0.03 ms/step compiled loop)
+- [x] MLIR export: tape → func/arith/linalg/tensor → LLVM → native
+      execution, bit-matching the J engine's forward
+
+Phase 2 — harden the kernel (next):
+
+- [ ] Linux CI + build (currently macOS-only; invariant: clean-checkout
+      builds on both platforms)
+- [ ] Exporter coverage: take/drop/gather/reshape/transpose
+- [ ] Thread-safety audit of the bridge (single J instance today)
+- [ ] Kernel ABI freeze: document the pyj C surface as a stable contract
+
+Phase 3 — prove the niche:
+
+- [ ] One real, non-demo workload running its numerics through the kernel.
+      Candidates: exact-integer verification of AI-generated numeric code;
+      an embedded training loop in a non-Python host (ad.ijs is pure J and
+      already works from bare jconsole); an MLIR reference backend for
+      checking numerically-optimized code.
+- [ ] Ship story: downstream app vendors libj + pyj (~5.5 MB total) with
+      no build step.
 
 ## License
 
