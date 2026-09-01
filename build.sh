@@ -47,6 +47,17 @@ PY_VER="${PY_VER:-$(python3 -c 'import sysconfig; print(sysconfig.get_config_var
 
 LIBDIR="$PWD/jlibrary/bin"
 if [ ! -f "$LIBDIR/libj.dylib" ] && [ ! -f "$LIBDIR/libj.so" ]; then
+  # jsource cpbin.sh renames the avx2/avx512 linux builds (libjavx2.so etc.),
+  # but the recorded soname stays libj.so — alias it so linking and runtime
+  # lookup both resolve.
+  for alt in libjavx2.so libjavx512.so; do
+    if [ -f "$LIBDIR/$alt" ]; then
+      ln -sf "$alt" "$LIBDIR/libj.so"
+      break
+    fi
+  done
+fi
+if [ ! -f "$LIBDIR/libj.dylib" ] && [ ! -f "$LIBDIR/libj.so" ]; then
   echo "ERROR: no libj in $LIBDIR — build jsource or copy a J release there (see header)."
   exit 1
 fi
