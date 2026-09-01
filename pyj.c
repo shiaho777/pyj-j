@@ -1,6 +1,21 @@
 /*
  * pyj.c — CPython extension embedding the J engine (libj.dylib/.so)
  *
+ * ============ STABLE ABI CONTRACT (see VISION.md invariants) ============
+ * The four module functions below are the kernel-facing contract. Downstream
+ * non-Python hosts may re-implement them verbatim against their own host
+ * language; the semantics they must preserve:
+ *
+ *   pyj.do(sentence)      -> (rc: int, [output lines]) ; rc 0 = success
+ *   pyj.set(name, obj)    -> store a numpy array as J noun `name`
+ *   pyj.get(name)         -> fetch J noun `name` as numpy array
+ *   pyj.free()            -> release the J instance
+ *
+ * Concurrency: ONE J instance per process, single-threaded use. JDo carries
+ * interpreter state (recurstate); concurrent calls from multiple threads are
+ * undefined. Serialize at the host layer (a lock) if needed.
+ * =========================================================================
+ *
  * Data path (v2, zero-serialization):
  *   - pyj.set(name, obj)  : numpy array -> J noun via JSetM (io.c setterm:
  *                           one memcpy from our buffer into JE memory)

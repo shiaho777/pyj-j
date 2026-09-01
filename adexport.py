@@ -25,6 +25,7 @@ Requires the llvm suite on PATH or MLIR_BIN env var (mlir-opt, mlir-translate, l
 """
 import os
 import subprocess
+import glob
 import tempfile
 
 import numpy as np
@@ -309,19 +310,125 @@ def _emit(m, i, node):
         a = p[0]
         shp = m.shapes[a]
         perm = list(range(len(shp)))[::-1]
-        ta, tc = m._dims(m.shapes[a]), m._dims(val.shape)
-        pt = "array<i64: " + ", ".join(str(x) for x in perm) + ">"
-        m.lines.append(
-            f"  {ssa} = linalg.transpose ins({m.ssa[a]}: tensor{ta}) "
-            f"outs({ssa}_t: tensor{tc}) permutation = affine_map<({','.join('d'+str(k) for k in range(len(shp)))}) -> ({','.join('d'+str(perm.index(k)) for k in range(len(shp)))})>"
-        ) if False else None
-        m.lines.append(
-            f"  {ssa} = linalg.transpose ins({m.ssa[a]}: tensor{ta}) "
-            f"outs( : tensor{tc}) permutation = "
-        ) if False else None
         emp = m._nv()
-        m.lines.append(f"  {ssa}_e = tensor.empty() : tensor{t}") if False else None
-        raise MlirExportError("transpose exporter incomplete — use reshape/mp on 2D or export without tr")
+        m.lines.append(f"  {emp} = tensor.empty() : {tsig(val.shape)}")
+        m.lines.append(
+            f"  {ssa} = linalg.transpose ins({m.ssa[a]} : {tsig(m.shapes[a])}) "
+            f"outs({emp} : {tsig(val.shape)}) permutation = {perm}"
+        )
+    elif op == "reshape":
+        a, b = p
+        inshape = m.shapes[a]
+        outshape = m.shapes[i]
+        if inshape and outshape:
+            # collapse input to flat, then expand to output: works when the
+            # input is contiguous-major (which our J values are)
+            nflat = 1
+            for d in inshape:
+                nflat *= d
+            nout = 1
+            for d in outshape:
+                nout *= d
+            if nflat != nout:
+                raise MlirExportError("reshape export: element count mismatch")
+            if len(inshape) > 1:
+                flat = m._nv()
+                m.lines.append(
+                    f"  {flat} = tensor.collapse_shape {m.ssa[a]} [[{', '.join(str(k) for k in range(len(inshape)))}]] "
+                    f": {tsig(inshape)} into tensor<{nflat}xf64>"
+                )
+                src_ssa = flat
+            else:
+                src_ssa = m.ssa[a]
+                nflat_src = nflat
+            if len(outshape) > 1:
+                exp2 = m._nv()
+                m.lines.append(
+                    f"  {ssa} = tensor.expand_shape {src_ssa} [[{', '.join(str(k) for k in range(len(outshape)))}]] "
+                    f"output_shape {list(outshape)} : tensor<{nflat}xf64> into {tsig(outshape)}"
+                )
+            else:
+                m.ssa[i] = src_ssa
+    elif op == "take":
+        a, b = p
+        xshape = m.shapes[a]
+        n = int(np.asarray(m.nodes[b]["value"]).reshape(-1)[0])
+        ranges = []
+        for k, d in enumerate(xshape):
+            if k == len(xshape) - 1:
+                ranges.append(f"[0, 0][{d}, {n}][1, 1]" if False else None)
+        # build offsets/sizes/strides: take n on the LAST dim
+        offs = ", ".join("0" for _ in xshape)
+        sizes = ", ".join(str(xshape[k] if k < len(xshape) - 1 else n) for k in range(len(xshape)))
+        strides = ", ".join("1" for _ in xshape)
+        m.lines.append(
+            f"  {ssa} = tensor.extract_slice {m.ssa[a]}[{offs}][{sizes}][{strides}] "
+            f": {tsig(xshape)} to {tsig(val.shape)}"
+        )
+    elif op == "drop":
+        a, b = p
+        xshape = m.shapes[a]
+        n = int(np.asarray(m.nodes[b]["value"]).reshape(-1)[0])
+        last = xshape[-1]
+        offs = ", ".join(str(n if k == len(xshape) - 1 else 0) for k in range(len(xshape)))
+        sizes = ", ".join(str(xshape[k] - n if k == len(xshape) - 1 else xshape[k]) for k in range(len(xshape)))
+        strides = ", ".join("1" for _ in xshape)
+        m.lines.append(
+            f"  {ssa} = tensor.extract_slice {m.ssa[a]}[{offs}][{sizes}][{strides}] "
+            f": {tsig(xshape)} to {tsig(val.shape)}"
+        )
+    elif op == "gather":
+        # (,idx){x — index the leading axis. Export as tensor.extract + insert
+        # chain (fine for embedding-table sizes at export time).
+        a, b = p
+        idx = [int(v) for v in np.asarray(m.nodes[b]["value"]).reshape(-1)]
+        rowshape = m.shapes[a][1:]
+        if len(idx) == 0:
+            raise MlirExportError("gather export: empty index")
+        if rowshape:
+            # vector rows: extract each row as tensor<rowshape>, then join via
+            # linalg ops is verbose; v1 supports 1-D tables only
+            if len(rowshape) != 1:
+                raise MlirExportError("gather export: only 1-D table rows in v1")
+            parts = []
+            for k, ix in enumerate(idx):
+                ci = m._nv()
+                m.lines.append(f"  {ci} = arith.constant {ix} : index")
+                row = m._nv()
+                m.lines.append(
+                    f"  {row} = tensor.extract_slice {m.ssa[a]}[{ix}][1][1] "
+                    f": {tsig(m.shapes[a])} to {tsig(tuple(rowshape))}"
+                ) if False else None
+                m.lines.append(
+                    f"  {row} = tensor.extract_slice {m.ssa[a]}[{ix}][1][1] "
+                    f": {tsig(m.shapes[a])} to tensor<{rowshape[0]}xf64>"
+                )
+                parts.append(row)
+            # concatenate via tensor.insertSlice into a fresh tensor
+            out = m._nv()
+            m.lines.append(f"  {out} = tensor.empty() : {tsig(val.shape)}")
+            cur = out
+            for k, (ix, row) in enumerate(zip(idx, parts)):
+                ci = m._nv()
+                m.lines.append(f"  {ci} = arith.constant {k} : index")
+                ins = m._nv()
+                m.lines.append(
+                    f"  {ins} = tensor.insert_slice {row} into {cur}[{k}, 0][1, {rowshape[0]}][1, 1] "
+                    f": {tsig((1, rowshape[0]))} into {tsig(val.shape)}"
+                )
+                cur = ins
+            m.ssa[i] = cur
+        else:
+            # scalar rows: tensor.extract each, from_elements
+            elems = []
+            for ix in idx:
+                ci = m._nv()
+                m.lines.append(f"  {ci} = arith.constant {ix} : index")
+                e = m._nv()
+                m.lines.append(f"  {e} = tensor.extract {m.ssa[a]}[{ci}] : {tsig(m.shapes[a])}")
+                elems.append(e)
+            lst = ", ".join(elems)
+            m.lines.append(f"  {ssa} = tensor.from_elements {lst} : {tsig(val.shape)}")
     else:
         raise MlirExportError(f"op '{op}' not supported by the MLIR exporter yet")
 
@@ -451,6 +558,8 @@ def export_and_run(leaf_names, out_node, leaf_values, func_name="jitmain"):
               "-convert-linalg-to-loops",
               "-convert-scf-to-cf",
               "-convert-bufferization-to-memref",
+              "-expand-strided-metadata",
+              "-lower-affine",
               "-finalize-memref-to-llvm",
               "-convert-cf-to-llvm",
               "-convert-math-to-llvm",
@@ -473,7 +582,14 @@ def export_and_run(leaf_names, out_node, leaf_values, func_name="jitmain"):
         bpath = os.path.join(td, "prog")
         clang = os.path.join(MLIR_BIN, "clang")
         clang_cmd = clang if os.path.exists(clang) else "clang"
-        _run([clang_cmd, dpath, lpath2, "-o", bpath, "-Wl,-e,_cmain"])
+        link_extra = []
+        libdir = os.path.join(MLIR_BIN, os.pardir, "lib")
+        for pat in ("libmlir_c_runner_utils.dylib", "libmlir_c_runner_utils.so", "libmlir_c_runner_utils.a"):
+            hit = sorted(glob.glob(os.path.join(libdir, pat)))
+            if hit:
+                link_extra = [hit[-1]]
+                break
+        _run([clang_cmd, dpath, lpath2, "-o", bpath, "-Wl,-e,_cmain"] + link_extra)
         out = _run([bpath])
         vals = [float(x) for x in out.split()]
         return np.array(vals, dtype=np.float64).reshape(out_shape if out_shape else ())

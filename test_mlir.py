@@ -9,6 +9,7 @@ reductions. This suite validates:
   3. softmax block (rmax1/rsub1/exp/rsum1/rdiv1 chain needs rdiv1 — exported
      as div; rsum1 as trailing reduce)
   4. gated mix (where = mask*value)
+  5. transpose, reshape, take, drop, gather (embedding lookup)
 
 Execution requires the LLVM suite (mlir-opt, mlir-translate) and clang.
 Set MLIR_BIN if they are not in /opt/homebrew/opt/llvm/bin. The test skips
@@ -94,6 +95,29 @@ g.back(L)
 ref = j_forward(L.id)
 got = export_and_run(["A", "B", "M"], L.id, {"A": A0, "B": B0, "M": cond})
 check("MLIR gated mix", got, ref)
+
+# ---- 5: shape ops ----
+M0 = rng.normal(size=(2, 3)); E0 = rng.normal(size=(8,)); toks = np.array([0, 2, 2, 5])
+
+g = Graph(); M = g.tensor(M0, "M")
+L = M.transpose().sum(); g.back(L)
+check("MLIR transpose", export_and_run(["M"], L.id, {"M": M0}), j_forward(L.id))
+
+g = Graph(); M = g.tensor(M0, "M")
+L = M.reshape(3, 2).sum(); g.back(L)
+check("MLIR reshape", export_and_run(["M"], L.id, {"M": M0}), j_forward(L.id))
+
+g = Graph(); M = g.tensor(M0, "M")
+L = M.drop(1).sum(); g.back(L)
+check("MLIR drop", export_and_run(["M"], L.id, {"M": M0}), j_forward(L.id))
+
+g = Graph(); M = g.tensor(M0, "M")
+L = M.take(2).sum(); g.back(L)
+check("MLIR take", export_and_run(["M"], L.id, {"M": M0}), j_forward(L.id))
+
+g = Graph(); E = g.tensor(E0, "E")
+L = E.gather(toks).sum(); g.back(L)
+check("MLIR gather", export_and_run(["E"], L.id, {"E": E0}), j_forward(L.id))
 
 print()
 print("MLIR TESTS:", "ALL OK" if fails == 0 else f"{fails} FAILURES")

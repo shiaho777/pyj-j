@@ -61,11 +61,18 @@ if [ "$UNAME" = "Darwin" ]; then
   [ -f "$LIBDIR/libgmp.dylib" ] || cp "$(brew --prefix)/lib/libgmp.dylib" "$LIBDIR/"
 fi
 
+# Linux: jsource links libj.so against libgmp (libgmp.so), no dlopen games.
+# The runtime looks it up via LD_LIBRARY_PATH at test time.
 $CC -O2 -fPIC -shared -o pyj.so pyj.c \
   -I"$PY_INC" -I"$NP_INC" \
   -L"$LIBDIR" -lj -L"$PY_LIB" -lpython$PY_VER \
   $([ "$UNAME" = "Darwin" ] && echo "-Wl,-headerpad_max_install_names")
 
 echo "built pyj.so"
-echo "run tests with:"
-echo "  DYLD_LIBRARY_PATH=$LIBDIR PYJ_LIBPATH=$LIBDIR python3 test_pyj.py"
+if [ "$UNAME" = "Darwin" ]; then
+  echo "run tests with:"
+  echo "  DYLD_LIBRARY_PATH=$LIBDIR PYJ_LIBPATH=$LIBDIR python3 test_pyj.py"
+else
+  echo "run tests with:"
+  echo "  LD_LIBRARY_PATH=$LIBDIR PYJ_LIBPATH=$LIBDIR python3 test_pyj.py"
+fi

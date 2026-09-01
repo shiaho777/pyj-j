@@ -99,7 +99,6 @@ Breaking any of these is a regression, regardless of features gained:
 
 ## Current gap to the bet
 
-- Linux is untested (CI is macOS-only) — invariant 5 is violated today.
-- Exporter coverage stops before take/drop/gather/reshape/transpose.
+- Linux CI job added but its first runs are still being validated.
 - No real workload yet (success criterion 3) — everything so far is
   self-validated demos.

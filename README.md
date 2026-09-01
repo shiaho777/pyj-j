@@ -157,11 +157,10 @@ Phase 1 — build the machine (done):
 
 Phase 2 — harden the kernel (next):
 
-- [ ] Linux CI + build (currently macOS-only; invariant: clean-checkout
-      builds on both platforms)
-- [ ] Exporter coverage: take/drop/gather/reshape/transpose
-- [ ] Thread-safety audit of the bridge (single J instance today)
-- [ ] Kernel ABI freeze: document the pyj C surface as a stable contract
+- [x] Linux CI + build (macOS arm64 + ubuntu-24.04, clean checkout)
+- [x] Exporter coverage: take/drop/gather/reshape/transpose
+- [x] Thread-safety audit of the bridge (single J instance today)
+- [x] Kernel ABI freeze: document the pyj C surface as a stable contract
 
 Phase 3 — prove the niche:
 
