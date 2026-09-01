@@ -1,5 +1,5 @@
 NB. ============================================================
-NB. adcomp.ijs -- tape-to-J-verb compiler (roadmap step 4a)
+NB. adcomp.ijs -- tape-to-J-verb compiler
 NB.
 NB. Reads the AD tape built by ad.ijs and emits the source of
 NB. two explicit J verbs:
