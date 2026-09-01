@@ -1,0 +1,16 @@
+# build artifacts
+*.so
+*.o
+*.dylib
+*.dll
+
+# J engine runtime files (built from jsource or installed by user)
+jlibrary/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# editor
+.DS_Store

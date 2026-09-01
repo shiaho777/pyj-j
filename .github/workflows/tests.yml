@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-14          # arm64
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install numpy + gmp
+        run: |
+          python3 -m pip install numpy
+          brew install gmp
+
+      - name: Build J engine from jsource
+        run: |
+          git clone --depth 1 https://github.com/jsoftware/jsource.git ../jsource
+          cd ../jsource/make2
+          # darwin arm64 release build (matches jsource build notes)
+          ./build_libj.sh
+          ./build_jconsole.sh
+          ./cpbin.sh
+
+      - name: Copy engine runtime into project
+        run: |
+          mkdir -p jlibrary/bin
+          cp ../jsource/jlibrary/bin/* jlibrary/bin/ || true
+
+      - name: Build pyj
+        run: ./build.sh
+
+      - name: Run all test suites
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
+          PYJ_LIBPATH: ${{ github.workspace }}/jlibrary/bin
+        run: |
+          for t in test_pyj.py test_ad.py test_nn.py test_ops2.py \
+                   test_train2.py test_compile.py test_ops3.py; do
+            echo "== $t =="
+            python3 "$t"
+          done

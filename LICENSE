@@ -1,0 +1,26 @@
+pyj — J as a tensor engine inside Python
+
+Copyright (c) 2026 pyj authors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License, version 3, as published
+by the Free Software Foundation, available at https://www.gnu.org/licenses.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+
+---
+
+Third-party notice:
+
+The J engine (libj) that this project embeds is J SOURCE, Copyright
+1990-2026 Jsoftware Inc., distributed here-under under the GNU General
+Public License version 3 (see LICENSE-jsource.txt for the upstream notice).
+It is used unmodified at runtime; this repository ships none of its binaries.
+You must obtain or build libj yourself (see README, "Build").
+
+J and jsource are trademarks/copyright of Jsoftware Inc. This is an
+independent pilot project and is not affiliated with or endorsed by
+Jsoftware.
