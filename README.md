@@ -108,6 +108,7 @@ DYLD_LIBRARY_PATH=$PWD/jlibrary/bin PYJ_LIBPATH=$PWD/jlibrary/bin python3 test_p
 `test_ops2.py` (rank-1/softmax), `test_ops3.py` (take/drop/gather + compiler
 parity + embedding training), `test_ops4.py` (arbitrary-axis sum + 3D
 softmax), `test_ops5.py` (gates + tape replay + compiled replay),
+`test_mlir.py` (MLIR export/execute parity),
 `test_train2.py` (softmax classifier),
 `test_compile.py` (compiler validation + benchmark).
 
@@ -148,8 +149,12 @@ again:
 - [x] Compare gates + gated mix (`__lt__`/`where`); tape replay caching
       (`replay`/`replay_step`: record once, batch-execute one JDo per step,
       and ADGEN-compile the recorded tape for a 0.03 ms/step training loop)
-- [ ] Full rank dispatch for all dyadics (currently: reduction, rowwise
-      arithmetic, compare); MLIR/StableHLO execution backend
+- [x] MLIR backend: `adexport.py` exports the tape to func/arith/linalg/tensor
+      MLIR, lowers to LLVM IR via `mlir-opt`/`mlir-translate` and executes
+      natively — results bit-match the J engine's forward (test_mlir.py).
+      Not exported yet: take/drop/gather/reshape/transpose.
+- [ ] Full rank dispatch for all dyadics; StableHLO/IREE target with
+      autograd; feeding the exported module into a real MLIR runtime
 
 ## License
 

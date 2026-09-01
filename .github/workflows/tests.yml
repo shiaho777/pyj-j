@@ -20,7 +20,8 @@ jobs:
       - name: Install numpy + gmp
         run: |
           python3 -m pip install numpy
-          brew install gmp
+          brew install gmp llvm
+          echo "MLIR_BIN=$(brew --prefix llvm)/bin" >> $GITHUB_ENV
 
       - name: Build J engine from jsource
         run: |
@@ -46,7 +47,7 @@ jobs:
         run: |
           for t in test_pyj.py test_ad.py test_nn.py test_ops2.py \
                    test_train2.py test_compile.py test_ops3.py test_ops4.py \
-                   test_ops5.py; do
+                   test_ops5.py test_mlir.py; do
             echo "== $t =="
             python3 "$t"
           done
