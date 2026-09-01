@@ -243,6 +243,12 @@ class Tensor:
         c = self.g._iconst(_np.asarray(idx, dtype=np.int64).ravel())
         return self.g._binop("ngather", self, c)
 
+    def sum_axis(self, k):
+        """sum over axis k (0-based). Result keeps the other axes in rotated
+        order (axes after k shift left). VJP un-rotates the replicated grad."""
+        c = self.g._iconst([int(k)])
+        return self.g._binop("nrsumr", self, c)
+
     def relu(self):      return self.g._relup(self)
     def exp(self):       return self.g._unop("nexp", self)
     def log(self):       return self.g._unop("nlog", self)

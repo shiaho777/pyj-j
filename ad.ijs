@@ -118,6 +118,12 @@ ndrop=: 4 : 0
 ngather=: 4 : 0
  nnew (<((,adV y) { adV x)) , (<'gather') , <(x adP y)
 )
+NB. axis-sum: sum over axis k (0-based, from left) of x. y = INT-k constant
+NB. leaf. Forward rotates axis k to the end, +/"1; result keeps the rotated
+NB. order of the other axes.
+nrsumr=: 4 : 0
+ nnew (<(((+/) " 1) (((i. # $ adV x) -. adV y) , adV y) |: adV x)) , (<'rsumr') , <(x adP y)
+)
 
 mp=: +/ . *
 
@@ -210,10 +216,12 @@ nback=: 3 : 0
     if. adR b do. b acc - +/"1 g end.
    case. 'rsum1' do.
     'a b'=. p
-    NB. per-row sums: replicate each grad element across its row (J $ would cycle!)
+    NB. per-row sums: replicate each grad element across its row. NB. $ keeps
+    NB. the item shape of an array argument — ravel first or the result
+    NB. gains a trailing axis!
     if. adR a do.
      pa2=. $ adV a
-     eg=. ({: pa2) # g          NB. replicate each row-grad element across its row
+     eg=. ({: pa2) # , g          NB. replicate each row-grad element across its row
      a acc ((pa2 $ eg))
     end.
    case. 'rdiv1' do.
@@ -252,6 +260,21 @@ nback=: 3 : 0
     if. adR a do.
      nrn=. 0 { $ adV a
      a acc (((i. nrn) ="(0 1) , adV b) mp g)
+    end.
+   case. 'rsumr' do.
+    'a b'=. p
+    NB. forward rotated axis k to the end (pv = axes-without-k , k) and
+    NB. reduced the trailing axis. g is in rotated frame order (leading
+    NB. n-1 axes of the rotated array). VJP: replicate each frame scalar
+    NB. across the reduced axis (ravel-replicate, exactly the rsum1 trick),
+    NB. reshape to the ROTATED input shape, then un-rotate with (/: pv).
+    if. adR a do.
+     ash=: $ adV a
+     kx=. adV b
+     pv=. ((i. # ash) -. kx) , kx
+     rsh=. ash { ~ pv                      NB. rotated input shape
+     eg=. ({: rsh) # , g
+     a acc (((/: pv) |: (rsh $ eg)))
     end.
    end.
   end.

@@ -45,7 +45,7 @@ jobs:
           PYJ_LIBPATH: ${{ github.workspace }}/jlibrary/bin
         run: |
           for t in test_pyj.py test_ad.py test_nn.py test_ops2.py \
-                   test_train2.py test_compile.py test_ops3.py; do
+                   test_train2.py test_compile.py test_ops3.py test_ops4.py; do
             echo "== $t =="
             python3 "$t"
           done

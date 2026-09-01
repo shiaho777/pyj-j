@@ -89,6 +89,7 @@ adcfdesc=: 3 : 0
  case. 'take' do. '(%B) {."1 (%A)'
  case. 'drop' do. '(%B) }."1 (%A)'
  case. 'gather' do. '(,%B) { (%A)'
+ case. 'rsumr' do. '((+/) " 1) (((i. # $ (%A)) -. (%B)) , (%B)) |: (%A)'
  case. do. ('UNKNOWN_' , y)
  end.
 )
@@ -250,6 +251,17 @@ ADGEN=: 4 : 0
      NB. scatter-accumulate: (i.nrows)="(0 1) idx matrix mp g (must SUM dups)
      lin=. lin , <('grn=. 0 { $' , va)
      lin=. lin , <(ga , '=. ' , ga , ' + (((i. grn) ="(0 1) (,' , vb , ')) mp ' , gi , ')')
+    end.
+   case. 'rsumr' do.
+    if. -. ac do.
+     NB. mirror interpreted VJP: rotate axis k to the end, replicate each
+     NB. frame scalar across the reduced axis, reshape, un-rotate.
+     lin=. lin , <('rsash=. $' , va)
+     lin=. lin , <('rsk=. ' , vb)
+     lin=. lin , <('rspv=. ((i. # rsash) -. rsk) , rsk')
+     lin=. lin , <('rsrsh=. rsash { ~ rspv')
+     lin=. lin , <('rseg=. ({: rsrsh) # , ' , gi)
+     lin=. lin , <(ga , '=. ' , ga , ' + ((/: rspv) |: (rsrsh $ rseg))')
     end.
    end.
    for_l. lin do. bln=. bln , (>l) , LF end.

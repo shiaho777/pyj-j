@@ -106,7 +106,8 @@ DYLD_LIBRARY_PATH=$PWD/jlibrary/bin PYJ_LIBPATH=$PWD/jlibrary/bin python3 test_p
 
 `test_pyj.py` (bridge), `test_ad.py` (AD core), `test_nn.py` (tensor API),
 `test_ops2.py` (rank-1/softmax), `test_ops3.py` (take/drop/gather + compiler
-parity + embedding training), `test_train2.py` (softmax classifier),
+parity + embedding training), `test_ops4.py` (arbitrary-axis sum + 3D
+softmax), `test_train2.py` (softmax classifier),
 `test_compile.py` (compiler validation + benchmark).
 
 Tested on macOS arm64. Linux should work with the `.so` suffix (the build
@@ -130,6 +131,10 @@ again:
   indices) need an `(i.n)="(0 1) idx` boolean-table matmul instead.
 - `(N,1) * (1,1)` is a length error: J extends rank-0 scalars, but doesn't
   extend length-1 frames the way numpy broadcasts.
+- `shape $ array` keeps the *item shape* of the argument: `(2,3,4) $ (8,3)`
+  is `(2,3,4,3)`, not `(2,3,4)`. Ravel first (`$ ,y`) when you want pure
+  element cycling. This one silently changed gradient shapes in the middle
+  of a backprop pass.
 
 ## Roadmap
 
@@ -138,6 +143,7 @@ again:
 - [x] Tensor API, end-to-end training runs
 - [x] Tape-to-verb compiler
 - [x] take/drop/gather (embedding lookup)
+- [x] Arbitrary-axis sum (`sum_axis`) — rank dispatch in tape form
 - [ ] General rank dispatch (`"`), comparison and choose
 - [ ] Tape replay caching; MLIR/StableHLO as an execution backend
 
