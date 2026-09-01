@@ -3,7 +3,8 @@
 Usage:
   DYLD_LIBRARY_PATH=../jlibrary/bin PYJ_LIBPATH=../jlibrary/bin python3 test_ad.py
 """
-import sys, os
+import sys, os, faulthandler
+faulthandler.enable()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pyj

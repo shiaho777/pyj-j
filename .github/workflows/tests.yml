@@ -89,6 +89,7 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
           PYJ_LIBPATH: ${{ github.workspace }}/jlibrary/bin
+          PYTHONFAULTHANDLER: 1
         run: |
           for t in test_pyj.py test_ad.py test_nn.py test_ops2.py \
                    test_train2.py test_compile.py test_ops3.py test_ops4.py \
