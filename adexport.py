@@ -471,7 +471,9 @@ def export_and_run(leaf_names, out_node, leaf_values, func_name="jitmain"):
         dpath = os.path.join(td, "driver.ll")
         open(dpath, "w").write("\n".join(lines) + "\n")
         bpath = os.path.join(td, "prog")
-        _run(["clang", dpath, lpath2, "-o", bpath, "-Wl,-e,_cmain"])
+        clang = os.path.join(MLIR_BIN, "clang")
+        clang_cmd = clang if os.path.exists(clang) else "clang"
+        _run([clang_cmd, dpath, lpath2, "-o", bpath, "-Wl,-e,_cmain"])
         out = _run([bpath])
         vals = [float(x) for x in out.split()]
         return np.array(vals, dtype=np.float64).reshape(out_shape if out_shape else ())
