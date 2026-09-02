@@ -55,7 +55,7 @@ jobs:
       - name: C host end-to-end (train.c)
         env:
           DYLD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
-        run: ./host/train jlibrary/bin pyj
+        run: ./host/train jlibrary/bin .
 
   linux:
     runs-on: ubuntu-24.04       # x86_64, j64avx2 build path
@@ -106,7 +106,7 @@ jobs:
       - name: C host end-to-end (train.c)
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
-        run: ./host/train jlibrary/bin pyj
+        run: ./host/train jlibrary/bin .
         # test_mlir.py skipped on this job: it needs the full llvm suite with
         # linalg dialect support; CI keeps the linux job lean. The macOS job
         # covers the exporter.
