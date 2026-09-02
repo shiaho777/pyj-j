@@ -79,6 +79,11 @@ $CC -O2 -fPIC -shared -o pyj.so pyj.c \
   -L"$LIBDIR" -lj -L"$PY_LIB" -lpython$PY_VER \
   $([ "$UNAME" = "Darwin" ] && echo "-Wl,-headerpad_max_install_names")
 
+# host/train: the non-Python C host driving libj through the raw ABI
+HOSTBIN=""
+if [ "$UNAME" = "Darwin" ]; then HOSTBIN="host/train"; else HOSTBIN="host/train"; fi
+$CC -O2 host/train.c -o "$HOSTBIN" -I"$LIBDIR" -L"$LIBDIR" -lj   && echo "built $HOSTBIN" || echo "WARNING: host/train build failed (non-fatal)"
+
 echo "built pyj.so"
 if [ "$UNAME" = "Darwin" ]; then
   echo "run tests with:"

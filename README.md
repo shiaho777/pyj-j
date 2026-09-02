@@ -164,13 +164,16 @@ Phase 2 — harden the kernel (next):
 
 Phase 3 — prove the niche:
 
-- [ ] One real, non-demo workload running its numerics through the kernel.
-      Candidates: exact-integer verification of AI-generated numeric code;
-      an embedded training loop in a non-Python host (ad.ijs is pure J and
-      already works from bare jconsole); an MLIR reference backend for
-      checking numerically-optimized code.
+- [x] One real, non-demo workload running its numerics through the kernel:
+      `host/train.c`, a ~100-line C host with no Python and no BLAS, drives
+      libj through the raw ABI to train a 2-16-16-2 tanh MLP on two-spiral
+      to 100% train accuracy (seeded, deterministic, runs in CI on both
+      platforms). Every numeric step -- dataset, forward, backprop, SGD --
+      executes inside the J engine; the host only sequences the ABI and
+      reads one scalar back.
 - [ ] Ship story: downstream app vendors libj + pyj (~5.5 MB total) with
-      no build step.
+      no build step. host/train is the template: one JInit2, one script
+      load, JDo per phase, JGetM for results.
 
 ## License
 

@@ -99,6 +99,6 @@ Breaking any of these is a regression, regardless of features gained:
 
 ## Current gap to the bet
 
-- Linux CI job added but its first runs are still being validated.
-- No real workload yet (success criterion 3) — everything so far is
-  self-validated demos.
+- Success criterion 3 (real workload) is now met once: host/train.c trains
+  a classifier end-to-end in J from a plain C host. Still open: a workload
+  somebody else wants to run.
