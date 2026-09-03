@@ -85,6 +85,20 @@ if [ "$UNAME" = "Darwin" ]; then HOSTBIN="host/train"; else HOSTBIN="host/train"
 $CC -O2 host/train.c -o "$HOSTBIN" -I"$LIBDIR" -L"$LIBDIR" -lj   && echo "built $HOSTBIN" || echo "WARNING: host/train build failed (non-fatal)"
 
 echo "built pyj.so"
+
+# vendor/ -- the zero-build ship story: prebuilt engine + kernel scripts +
+# one demo app. Downstream receives THIS folder only.
+if [ "${PYJ_VENDOR:-1}" = "1" ]; then
+  mkdir -p vendor/kernel
+  cp "$LIBDIR"/libj.dylib "$LIBDIR"/libj.so vendor/ 2>/dev/null || true
+  cp "$LIBDIR"/libgmp.dylib vendor/ 2>/dev/null || true
+  cp ad.ijs vendor/kernel/ad.ijs
+  cp host/train.ijs vendor/kernel/train.ijs
+  (cd vendor && $CC -O2 app.c -o vendor_demo -I. -L. -lj) \
+    && echo "built vendor/vendor_demo" \
+    || echo "WARNING: vendor demo build failed (non-fatal)"
+fi
+
 if [ "$UNAME" = "Darwin" ]; then
   echo "run tests with:"
   echo "  DYLD_LIBRARY_PATH=$LIBDIR PYJ_LIBPATH=$LIBDIR python3 test_pyj.py"

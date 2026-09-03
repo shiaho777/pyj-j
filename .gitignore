@@ -14,3 +14,6 @@ __pycache__/
 
 # editor
 .DS_Store
+
+# vendor demo binary (rebuilt by build.sh / vendor Makefile)
+vendor/vendor_demo

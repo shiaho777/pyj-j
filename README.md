@@ -171,9 +171,22 @@ Phase 3 — prove the niche:
       platforms). Every numeric step -- dataset, forward, backprop, SGD --
       executes inside the J engine; the host only sequences the ABI and
       reads one scalar back.
-- [ ] Ship story: downstream app vendors libj + pyj (~5.5 MB total) with
-      no build step. host/train is the template: one JInit2, one script
-      load, JDo per phase, JGetM for results.
+- [x] Ship story: `vendor/` is what a downstream app receives — the
+      prebuilt engine (~5 MB), two pure-J kernel scripts, and a ~100-line
+      C app that trains in-process and serves predictions. No jsource, no
+      Python, no engine build step: `make && ./vendor_demo`.
+
+## Embedding it yourself
+
+Three levels, same engine:
+
+1. **Python host** (`pyj` module + `adt.py`): numpy arrays cross the
+   bridge zero-copy; `ad.ijs` does tape AD; `adcomp.ijs` compiles the
+   tape to straight-line J verbs; `adexport.py` emits MLIR.
+2. **C host** (`host/train.c`): the raw 5-call ABI — `JInit2`, `JSM`,
+   `JDo`, `JGetM`, `JFree`. Trains a classifier end-to-end in J.
+3. **Vendored** (`vendor/`): prebuilt `libj` + kernel scripts + demo
+   app. The zero-build downstream experience.
 
 ## License
 

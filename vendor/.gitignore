@@ -1,0 +1,5 @@
+# build artifacts -- the repo's build.sh regenerates them
+libj.dylib
+libj.so
+libgmp.dylib
+vendor_demo

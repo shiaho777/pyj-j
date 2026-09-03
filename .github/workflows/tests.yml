@@ -57,6 +57,12 @@ jobs:
           DYLD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
         run: ./host/train jlibrary/bin .
 
+      - name: Vendored zero-build demo
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/vendor
+        working-directory: vendor
+        run: ./vendor_demo
+
   linux:
     runs-on: ubuntu-24.04       # x86_64, j64avx2 build path
     timeout-minutes: 45
@@ -107,6 +113,12 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
         run: ./host/train jlibrary/bin .
+
+      - name: Vendored zero-build demo
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/vendor
+        working-directory: vendor
+        run: ./vendor_demo
         # test_mlir.py skipped on this job: it needs the full llvm suite with
         # linalg dialect support; CI keeps the linux job lean. The macOS job
         # covers the exporter.

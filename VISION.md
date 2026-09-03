@@ -99,6 +99,7 @@ Breaking any of these is a regression, regardless of features gained:
 
 ## Current gap to the bet
 
-- Success criterion 3 (real workload) is now met once: host/train.c trains
-  a classifier end-to-end in J from a plain C host. Still open: a workload
-  somebody else wants to run.
+- Success criterion 3 (real workload) is met: host/train.c trains a
+  classifier end-to-end in J from a plain C host, and vendor/ packages
+  the zero-build downstream experience. Still open: a workload somebody
+  else wants to run.
