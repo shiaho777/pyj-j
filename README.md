@@ -74,6 +74,8 @@ methodology and honest boundaries: [recon/REPORT.md](recon/REPORT.md). Run
 the money-checker demo over a real MCP handshake: `make demo`. Full test
 suite (73 checks): `make tally-test`.
 
+<p align="center"><img src="docs/assets/tally_demo.gif" alt="Recorded demo: Tally flags a float64 mortgage balance as WRONG and prints the exact rational" width="720"></p>
+
 <p align="center"><img src="docs/assets/fig-compare.svg" alt="Correct significant digits of float64 defaults versus Tally, which is exact" width="720"></p>
 
 <p align="center"><img src="docs/assets/fig-stats.svg" alt="Stat cards: 5.0 MB engine, 37 ops, 3 tools, 73 checks, 375-digit factorials, 13 of 15 shootout wins, 2 CI platforms, 200 certified digits" width="720"></p>

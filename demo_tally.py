@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -62,12 +63,14 @@ def main():
         print(f"[tools] {[t['name'] for t in r['result']['tools']]}")
 
         banner("SCENE 1: the agent's float64 instinct")
+        time.sleep(2.0)
         naive = 100000 * (1 + 0.05 / 12) ** 360
         print(f"agent computes in its head (float64): {naive!r}")
         print("looks plausible. it even rounds to cents:",
               f"${naive:,.2f}")
 
         banner("SCENE 2: tally_verify grades the claim")
+        time.sleep(1.5)
         expr = {"op": "mul", "args": [
             "100000",
             {"op": "pow", "base": "1.00416666666666666666666666666667",
@@ -83,6 +86,7 @@ def main():
         print(f"rel error: {m['rel_error_decimal']}")
 
         banner("SCENE 3: the branch that mattered")
+        time.sleep(1.5)
         r = call("tools/call", {"name": "tally_compute", "arguments": {
             "expression": {"op": "eq",
                            "a": {"op": "sum", "of": ["0.1"] * 10},
@@ -93,6 +97,7 @@ def main():
               "the else-branch.)\n")
 
         banner("SCENE 4: Hilbert_4 inverse -- integer, provably")
+        time.sleep(1.5)
         r = call("tools/call", {"name": "tally_compute", "arguments": {
             "expression": {"op": "inv", "m": [
                 [f"1/{i+j+1}" for j in range(4)] for i in range(4)]}}})
@@ -103,6 +108,7 @@ def main():
               "integers -- because the truth IS integer.)")
     finally:
         proc.stdin.close()
+        time.sleep(2.5)
         proc.wait(timeout=10)
 
 
