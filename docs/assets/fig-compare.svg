@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300">
+  <!-- fig-compare: significant digits correct, float64 default vs Tally.
+       Bar scale: width = digits/16 * 470 px. Values verified via Fraction
+       comparison (see audit notes):
+       05 compound interest: exact 446774.4314006132, float64 446774.4314006109
+         -> 14 shared significant digits
+       06 1/det Hilbert4: 6048000 vs 6047999.999999422
+         -> ~3 significant digits (6047999.99 vs 6048000)
+       10 one-pass variance: 8.25 vs 128.0 -> 0 digits (rel err 14.5)
+       11 math.e: 16 float64 digits, all correct by luck of rounding
+       13b float(2^53+1): 9007199254740993 vs 9007199254740992.0 -> 15 of 16 digits
+       Tally is exact by construction (infinite bar shown at cap 16+). -->
+  <rect width="880" height="300" fill="#FFFFFF"/>
+  <text x="440" y="34" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="17" font-weight="700" fill="#0F172A">How many digits survive the float?</text>
+  <text x="440" y="54" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" fill="#475569">correct significant digits, float64 default vs Tally — shootout cases 05/06/10/13b</text>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- axis -->
+    <line x1="230" y1="72" x2="230" y2="262" stroke="#CBD5E1" stroke-width="1"/>
+    <g font-size="10" fill="#94A3B8" text-anchor="middle">
+      <text x="230" y="278">0</text><text x="377" y="278">4</text>
+      <text x="523" y="278">8</text><text x="670" y="278">12</text>
+      <text x="700" y="278">16</text>
+    </g>
+    <g stroke="#F1F5F9" stroke-width="1">
+      <line x1="377" y1="72" x2="377" y2="262"/>
+      <line x1="523" y1="72" x2="523" y2="262"/>
+      <line x1="670" y1="72" x2="670" y2="262"/>
+    </g>
+
+    <!-- 05: 14 digits float64, exact Tally -->
+    <text x="222" y="102" text-anchor="end" font-size="11.5" fill="#334155">compound interest (05)</text>
+    <rect x="230" y="88" width="411" height="14" rx="3" fill="#FCA5A5"/><!-- 14/16*470 = 411 -->
+    <rect x="230" y="106" width="470" height="14" rx="3" fill="#6EE7B7"/><!-- exact: capped 470 -->
+    <text x="647" y="99" font-size="10" font-weight="700" fill="#DC2626">14</text>
+    <text x="706" y="117" font-size="10" font-weight="700" fill="#059669">exact</text>
+
+    <!-- 06: ~3 digits float64, exact Tally -->
+    <text x="222" y="142" text-anchor="end" font-size="11.5" fill="#334155">1 / det(Hilbert₄) (06)</text>
+    <rect x="230" y="128" width="88" height="14" rx="3" fill="#FCA5A5"/><!-- 3/16*470 = 88 -->
+    <rect x="230" y="146" width="470" height="14" rx="3" fill="#6EE7B7"/>
+    <text x="324" y="139" font-size="10" font-weight="700" fill="#DC2626">3</text>
+    <text x="706" y="157" font-size="10" font-weight="700" fill="#059669">exact</text>
+
+    <!-- 10: 0 digits -->
+    <text x="222" y="182" text-anchor="end" font-size="11.5" fill="#334155">one-pass variance (10)</text>
+    <rect x="230" y="168" width="7" height="14" rx="3" fill="#FCA5A5"/><!-- 0 -> min visible 7 -->
+    <rect x="230" y="186" width="470" height="14" rx="3" fill="#6EE7B7"/>
+    <text x="243" y="179" font-size="10" font-weight="700" fill="#DC2626">0 (128.0 vs 8.25)</text>
+    <text x="706" y="197" font-size="10" font-weight="700" fill="#059669">exact</text>
+
+    <!-- 13b: 15 of 16 digits -->
+    <text x="222" y="222" text-anchor="end" font-size="11.5" fill="#334155">float(2⁵³ + 1) (13b)</text>
+    <rect x="230" y="208" width="440" height="14" rx="3" fill="#FCA5A5"/><!-- 15/16*470 = 440 -->
+    <rect x="230" y="226" width="470" height="14" rx="3" fill="#6EE7B7"/>
+    <text x="676" y="219" font-size="10" font-weight="700" fill="#DC2626">15 / 16</text>
+    <text x="706" y="237" font-size="10" font-weight="700" fill="#059669">exact</text>
+  </g>
+
+  <rect x="230" y="252" width="470" height="26" rx="13" fill="#059669"/>
+  <text x="465" y="269" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#FFFFFF">Tally is exact by construction — no digits are lost, ever</text>
+</svg>

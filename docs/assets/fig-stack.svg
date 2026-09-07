@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="400" viewBox="0 0 880 400">
+  <!-- fig-stack: layered architecture. Sizes are real (ls -la / wc -l):
+       libj.dylib 5,195,192 B = 5.0 MB; libgmp.dylib 436,880 B = 0.42 MB;
+       tally_server.py 245 lines; tally_ast.py 594 lines;
+       pyj.c 239 lines; J engine = jsource (unmodified). -->
+  <rect width="880" height="400" fill="#FFFFFF"/>
+  <text x="440" y="36" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="18" font-weight="700" fill="#0F172A">One engine, three faces</text>
+  <text x="440" y="56" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" fill="#475569">every layer above libj is replaceable; the exact core never changes</text>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- layer 1: hosts -->
+    <rect x="40" y="76" width="800" height="56" rx="10" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1"/>
+    <text x="440" y="99" text-anchor="middle" font-size="14" font-weight="700" fill="#7C3AED">Hosts</text>
+    <text x="440" y="119" text-anchor="middle" font-size="11.5" fill="#334155">MCP client (Claude et al.) · Python (pyj) · C host (train.c, 98 lines) · vendor app (app.c, 102 lines)</text>
+    <polygon points="434,136 446,136 440,146" fill="#94A3B8"/>
+
+    <!-- layer 2: protocol -->
+    <rect x="40" y="146" width="800" height="56" rx="10" fill="#DBEAFE" stroke="#2563EB" stroke-width="1"/>
+    <text x="440" y="169" text-anchor="middle" font-size="14" font-weight="700" fill="#2563EB">Protocol</text>
+    <text x="440" y="189" text-anchor="middle" font-size="11.5" fill="#334155">MCP stdio NDJSON (tally_server.py, 245 lines) · pyj ABI: JInit2 / JDo / JSetM / JGetM / JFree</text>
+    <polygon points="434,206 446,206 440,216" fill="#94A3B8"/>
+
+    <!-- layer 3: exact layer -->
+    <rect x="40" y="216" width="800" height="56" rx="10" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+    <text x="440" y="239" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">Exact layer</text>
+    <text x="440" y="259" text-anchor="middle" font-size="11.5" fill="#334155">tally_ast.py (594 lines): parse_float capture → Fraction → extended-precision J literals → exact results</text>
+    <polygon points="434,276 446,276 440,286" fill="#94A3B8"/>
+
+    <!-- layer 4: engine -->
+    <rect x="40" y="286" width="800" height="56" rx="10" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+    <text x="440" y="309" text-anchor="middle" font-size="14" font-weight="700" fill="#D97706">Engine — unmodified</text>
+    <text x="440" y="329" text-anchor="middle" font-size="11.5" fill="#334155">libj.dylib 5.0 MB (J engine, jsource) + libgmp 0.42 MB (GMP arbitrary precision)</text>
+    <polygon points="434,346 446,346 440,356" fill="#94A3B8"/>
+
+    <!-- base -->
+    <rect x="40" y="356" width="800" height="28" rx="8" fill="#F1F5F9" stroke="#E2E8F0"/>
+    <text x="440" y="374" text-anchor="middle" font-size="11" fill="#64748B">float64 never crosses this line ↓ — every value in the engine is an integer or a rational</text>
+  </g>
+</svg>

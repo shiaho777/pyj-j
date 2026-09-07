@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="150" viewBox="0 0 880 150">
+  <!-- fig-stats: real countable facts. Sources:
+       5.0 MB  = ls -la jlibrary/bin/libj.dylib (5,195,192 B)
+       37      = ops implemented in tally_ast.py compiler (grep)
+       3       = tools in tally_server.py TOOLS list
+       73      = checks in test_tally.py ("73 passed")
+       375     = digits of 200! (len(str(math.factorial(200))))
+       13/15   = shootout subjects where terminal default fails (REPORT.md)
+       2       = CI platforms in .github/workflows/tests.yml
+       200     = MAX_DIGITS cap in tally_ast.py -->
+  <rect width="880" height="150" fill="#FFFFFF"/>
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" text-anchor="middle">
+    <!-- row 1 -->
+    <rect x="20" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="120" y="38" font-size="17" font-weight="700" fill="#1D4ED8">5.0 MB</text>
+    <text x="120" y="56" font-size="10.5" fill="#64748B">engine footprint (libj)</text>
+
+    <rect x="236" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="336" y="38" font-size="17" font-weight="700" fill="#059669">37</text>
+    <text x="336" y="56" font-size="10.5" fill="#64748B">exact ops in the AST</text>
+
+    <rect x="452" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="552" y="38" font-size="17" font-weight="700" fill="#7C3AED">3</text>
+    <text x="552" y="56" font-size="10.5" fill="#64748B">MCP tools (compute/verify/stats)</text>
+
+    <rect x="668" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="768" y="38" font-size="17" font-weight="700" fill="#D97706">73</text>
+    <text x="768" y="56" font-size="10.5" fill="#64748B">checks passing (make tally-test)</text>
+
+    <!-- row 2 -->
+    <rect x="20" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="120" y="104" font-size="17" font-weight="700" fill="#7C3AED">375 digits</text>
+    <text x="120" y="122" font-size="10.5" fill="#64748B">200! — exact, over MCP</text>
+
+    <rect x="236" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="336" y="104" font-size="17" font-weight="700" fill="#DC2626">13 / 15</text>
+    <text x="336" y="122" font-size="10.5" fill="#64748B">shootout: float64 fails</text>
+
+    <rect x="452" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="552" y="104" font-size="17" font-weight="700" fill="#1D4ED8">2</text>
+    <text x="552" y="122" font-size="10.5" fill="#64748B">CI platforms (macOS · Linux)</text>
+
+    <rect x="668" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="768" y="104" font-size="17" font-weight="700" fill="#059669">200</text>
+    <text x="768" y="122" font-size="10.5" fill="#64748B">max certified decimal digits</text>
+  </g>
+</svg>

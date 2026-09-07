@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340">
+  <!-- fig-arch: three embedding routes converging on one exact engine.
+       All sizes/lines measured in-tree (see XML comments per node). -->
+  <rect width="880" height="340" fill="#FFFFFF"/>
+  <text x="440" y="36" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="18" font-weight="700" fill="#0F172A">One engine, three ways in</text>
+  <text x="440" y="58" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" fill="#475569">the same libj core sits under every route — Python, C, or MCP</text>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- route boxes -->
+    <rect x="40" y="86" width="240" height="72" rx="10" fill="#EDE9FE" stroke="#7C3AED"/>
+    <text x="160" y="110" text-anchor="middle" font-size="12.5" font-weight="700" fill="#7C3AED">Python host</text>
+    <text x="160" y="130" text-anchor="middle" font-size="10" fill="#334155">pyj.so C-extension · 51 KB</text>
+    <text x="160" y="146" text-anchor="middle" font-size="10" fill="#64748B">numpy ⇄ J nouns, zero-copy</text>
+
+    <rect x="330" y="86" width="240" height="72" rx="10" fill="#DBEAFE" stroke="#2563EB"/>
+    <text x="450" y="110" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1D4ED8">C host</text>
+    <text x="450" y="130" text-anchor="middle" font-size="10" fill="#334155">host/train.c · 98 lines</text>
+    <text x="450" y="146" text-anchor="middle" font-size="10" fill="#64748B">trains an MLP through 5 ABI calls</text>
+
+    <rect x="620" y="86" width="240" height="72" rx="10" fill="#D1FAE5" stroke="#059669"/>
+    <text x="740" y="110" text-anchor="middle" font-size="12.5" font-weight="700" fill="#059669">MCP server</text>
+    <text x="740" y="130" text-anchor="middle" font-size="10" fill="#334155">tally_server.py · 245 lines</text>
+    <text x="740" y="146" text-anchor="middle" font-size="10" fill="#64748B">exact arithmetic for AI agents</text>
+
+    <!-- convergence arrows -->
+    <path d="M160 158 V188" stroke="#94A3B8" stroke-width="2"/>
+    <polygon points="154,188 160,200 166,188" fill="#94A3B8"/>
+    <path d="M450 158 V188" stroke="#94A3B8" stroke-width="2"/>
+    <polygon points="444,188 450,200 456,188" fill="#94A3B8"/>
+    <path d="M740 158 V188" stroke="#94A3B8" stroke-width="2"/>
+    <polygon points="734,188 740,200 746,188" fill="#94A3B8"/>
+
+    <!-- ABI band -->
+    <rect x="40" y="204" width="800" height="46" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="440" y="224" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0F172A">5-call ABI — JInit2 · JSM · JDo · JSetM · JGetM · JFree</text>
+    <text x="440" y="242" text-anchor="middle" font-size="10.5" fill="#64748B">frozen ABI (pyj.c, 239 lines): data crosses by pointer, one memcpy each way</text>
+    <polygon points="440,250 434,260 446,260" fill="#94A3B8"/>
+
+    <!-- engine core -->
+    <rect x="140" y="264" width="600" height="56" rx="10" fill="#FEF3C7" stroke="#D97706"/>
+    <text x="440" y="287" text-anchor="middle" font-size="13.5" font-weight="700" fill="#B45309">libj — the J engine, used unmodified</text>
+    <text x="440" y="307" text-anchor="middle" font-size="11" fill="#334155">5.0 MB dylib + 0.42 MB libgmp · 30-year-tuned array VM · GMP rationals inside</text>
+  </g>
+</svg>

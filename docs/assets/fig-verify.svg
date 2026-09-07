@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330">
+  <!-- fig-verify: verify decision tree. audit_note texts are verbatim
+       from tally_ast._audit_note outputs on real mismatch cases. -->
+  <rect width="880" height="330" fill="#FFFFFF"/>
+  <text x="440" y="34" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="17" font-weight="700" fill="#0F172A">tally_verify - the claim audit path</text>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <!-- start: claimed value -->
+    <rect x="40" y="70" width="200" height="64" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="140" y="96" text-anchor="middle" font-size="12" font-weight="700" fill="#0F172A">STEP 1  claimed value</text>
+    <text x="140" y="116" text-anchor="middle" font-size="10.5" fill="#64748B">from the agent's own math</text>
+
+    <path d="M240 102 H300" stroke="#94A3B8" stroke-width="2" fill="none"/>
+    <polygon points="300,96 312,102 300,108" fill="#94A3B8"/>
+
+    <!-- recompute -->
+    <rect x="316" y="70" width="220" height="64" rx="10" fill="#DBEAFE" stroke="#2563EB" stroke-width="1"/>
+    <text x="426" y="96" text-anchor="middle" font-size="12" font-weight="700" fill="#2563EB">STEP 2  recompute exactly</text>
+    <text x="426" y="116" text-anchor="middle" font-size="10.5" fill="#334155">same AST, GMP rationals</text>
+
+    <path d="M536 102 H596" stroke="#94A3B8" stroke-width="2" fill="none"/>
+    <polygon points="596,96 608,102 596,108" fill="#94A3B8"/>
+
+    <!-- compare diamond -->
+    <polygon points="700,70 788,102 700,134 612,102" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+    <text x="700" y="107" text-anchor="middle" font-size="12" font-weight="700" fill="#D97706">equal?</text>
+
+    <!-- yes path -->
+    <path d="M700 134 V160 H570 V176" stroke="#94A3B8" stroke-width="2" fill="none"/>
+    <polygon points="564,176 570,188 566,176" fill="#94A3B8"/>
+    <text x="630" y="156" font-size="10" fill="#059669">yes</text>
+    <rect x="470" y="186" width="180" height="52" rx="10" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+    <text x="560" y="208" text-anchor="middle" font-size="12" font-weight="700" fill="#059669">match</text>
+    <text x="560" y="226" text-anchor="middle" font-size="10.5" fill="#334155">verdict: matches exact</text>
+
+    <!-- no path -->
+    <path d="M788 102 H800 V176" stroke="#94A3B8" stroke-width="2" fill="none"/>
+    <polygon points="794,170 800,182 806,170" fill="#94A3B8"/>
+    <text x="806" y="96" font-size="10" fill="#DC2626">no</text>
+    <rect x="700" y="186" width="150" height="52" rx="10" fill="#FEE2E2" stroke="#DC2626" stroke-width="1"/>
+    <text x="775" y="208" text-anchor="middle" font-size="12" font-weight="700" fill="#DC2626">mismatch</text>
+    <text x="775" y="226" text-anchor="middle" font-size="10.5" fill="#334155">verdict: WRONG</text>
+
+    <!-- audit notes -->
+    <text x="60" y="262" font-size="11.5" font-weight="700" fill="#475569">audit_note (on mismatch) - real outputs:</text>
+    <rect x="60" y="274" width="250" height="40" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="185" y="291" text-anchor="middle" font-size="10" fill="#334155">wrong magnitude: exact ~10^0,</text>
+    <text x="185" y="305" text-anchor="middle" font-size="10" fill="#334155">claim ~10^5 - check the scale</text>
+    <rect x="330" y="274" width="250" height="40" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="455" y="291" text-anchor="middle" font-size="10" fill="#334155">correct for 16 significant digit(s),</text>
+    <text x="455" y="305" text-anchor="middle" font-size="10" fill="#334155">wrong from digit #17 onward</text>
+    <rect x="600" y="274" width="250" height="40" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="725" y="291" text-anchor="middle" font-size="10" fill="#334155">wrong sign: exact value is -3,</text>
+    <text x="725" y="305" text-anchor="middle" font-size="10" fill="#334155">the claim has the opposite sign</text>
+  </g>
+</svg>

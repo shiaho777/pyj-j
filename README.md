@@ -1,5 +1,10 @@
 # pyj
 
+[![CI](https://github.com/shiaho777/pyj-j/actions/workflows/tests.yml/badge.svg)](https://github.com/shiaho777/pyj-j/actions/workflows/tests.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20arm64%20%C2%B7%20ubuntu--24.04-lightgrey)
+![Checks](https://img.shields.io/badge/tally--test-73%20passing-brightgreen)
+
 A few-megabyte **embeddable tensor kernel**: the J language engine, loaded
 in-process, used unmodified as the compute core — with reverse-mode autodiff,
 a tape compiler, and an MLIR export path living inside it. Python is the
@@ -9,6 +14,8 @@ The bet in one line: a closed-set array language is a ready-made IR with a
 30-year-tuned interpreter attached, and that combination is more useful
 *embedded* than it ever was as a language. The full argument — the niche,
 the invariants, the success criteria — is in [VISION.md](VISION.md).
+
+<p align="center"><img src="docs/assets/fig-arch.svg" alt="Three hosts (Python, C, MCP) converging on the 5-call ABI and the libj engine" width="720"></p>
 
 Concretely: numpy arrays cross into J without conversion, and the bridge
 layers reverse-mode AD on top — tape recording, VJP rules, and a compiler
@@ -28,9 +35,52 @@ pyj.get("t")                  # shape (2, 3)
 pyj.do("bpv=: !32x")          # 32! exactly, via GMP — past int64
 ```
 
+## Tally: exact arithmetic for AI agents
+
+Same engine, second face. **Tally** is an MCP server ([TALLY.md](TALLY.md))
+that gives AI agents exact arithmetic — integers, rationals, matrices,
+statistics — with no float error, ever. Agents never see J; they call three
+tools (`tally_compute` / `tally_verify` / `tally_stats`) and every result is
+an exact integer or `p/q` rational. JSON is parsed with `parse_float`
+capturing the literal text, so `0.1` means 1/10 before any float can touch it.
+
+<p align="center"><img src="docs/assets/fig-hero.svg" alt="A float64 claim is recomputed by Tally's exact engine and graded" width="720"></p>
+
+Why it matters — a sample from the [caught-in-the-act cards](recon/CARDS.md):
+
+**The formula LLMs generate most often for variance:**
+
+| | answer |
+|---|---|
+| numpy one-pass `mean(x²)−mean(x)²`, x = 1e9+0..9 | `128.0` |
+| **Tally** | `33/4` (exactly 8.25) |
+
+**The branch that matters:**
+
+| | answer |
+|---|---|
+| python: `0.1` added 10 times `== 1.0` | `False` (0.9999999999999999) |
+| **Tally** | exactly `1` — the reconciliation job takes the right branch |
+
+**The answer that vanishes:**
+
+| | answer |
+|---|---|
+| python: `1 - math.cos(1e-8)` | `0.0` (rounded to exactly zero) |
+| **Tally** | ≈ 5.00000000000000042×10⁻¹⁷, exact rational |
+
+10 more cards: [recon/CARDS.md](recon/CARDS.md). The 15-point shootout with
+methodology and honest boundaries: [recon/REPORT.md](recon/REPORT.md). Run
+the money-checker demo over a real MCP handshake: `make demo`. Full test
+suite (73 checks): `make tally-test`.
+
+<p align="center"><img src="docs/assets/fig-compare.svg" alt="Correct significant digits of float64 defaults versus Tally, which is exact" width="720"></p>
+
+<p align="center"><img src="docs/assets/fig-stats.svg" alt="Stat cards: 5.0 MB engine, 37 ops, 3 tools, 73 checks, 375-digit factorials, 13 of 15 shootout wins, 2 CI platforms, 200 certified digits" width="720"></p>
+
 ## Autodiff
 
-`ad.ijs` is ~250 lines of J implementing reverse-mode AD over a closed set of
+`ad.ijs` is ~360 lines of J implementing reverse-mode AD over a closed set of
 24 primitives (arithmetic, matmul, tanh/exp/log, sum/max, rank-1 ops,
 reshape/transpose/take/drop/gather). `adt.py` wraps it in a tensor API:
 
@@ -76,9 +126,13 @@ Measured on a 96-sample softmax forward+backward:
 | rebuild tape + ADGET | 4.05 ms |
 | compiled verb | 0.02 ms |
 
-That's ~180x, and it's the path I'd take further: the generated verb is
+That's ~200× (4.05 ms → 0.02 ms), and it's the path I'd take further: the generated verb is
 ordinary J, so it can eventually be replayed, cached, or shipped to a real
 backend.
+
+$$
+\frac{\text{rebuild tape + ADGET}}{\text{compiled verb}} = \frac{4.05\ \text{ms}}{0.02\ \text{ms}} \approx 200\times
+$$
 
 ## The bridge
 
@@ -149,7 +203,7 @@ Phase 1 — build the machine (done):
 - [x] Zero-copy numpy bridge
 - [x] Closed-set reverse-mode AD, gradchecked
 - [x] Tensor API, end-to-end training runs
-- [x] Tape-to-verb compiler (~180x vs the interpreted tape)
+- [x] Tape-to-verb compiler (~200× vs the interpreted tape)
 - [x] take/drop/gather (embedding lookup); arbitrary-axis sum; compare
       gates + gated mix; tape replay caching (0.03 ms/step compiled loop)
 - [x] MLIR export: tape → func/arith/linalg/tensor → LLVM → native
@@ -175,6 +229,19 @@ Phase 3 — prove the niche:
       prebuilt engine (~5 MB), two pure-J kernel scripts, and a ~100-line
       C app that trains in-process and serves predictions. No jsource, no
       Python, no engine build step: `make && ./vendor_demo`.
+
+Phase 4 — exact arithmetic as an agent tool (in progress):
+
+- [x] Tally MCP server (`tally_server.py` + `tally_ast.py`): three tools —
+      `tally_compute`, `tally_verify`, `tally_stats`. Every result is an
+      exact integer or `p/q` rational; floats never enter the engine.
+- [x] `tally_verify` audit notes: on a mismatch it reports where the claim
+      went wrong (wrong magnitude / wrong digit #N / wrong sign), not just
+      that it mismatched.
+- [x] Evidence pack (`recon/`): a 15-point shootout vs terminal defaults
+      (float64, bc, numpy) and 13 caught-in-the-act cards for the README.
+- [x] Repo entry points: `make tally-test` (73 checks), `make demo`,
+      `make shootout`, `make cards`, `make host`, `make vendor`.
 
 ## Embedding it yourself
 
