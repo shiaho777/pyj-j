@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """
-tournament.py -- closed-loop simulation: calibrated order books, exact solver.
+tournament.py -- closed-loop simulation: calibrated books, exact solver.
 
-No real order flow needed: we calibrate a generator from the REAL
-settlements we can observe on-chain, then run end-to-end tournaments:
-
-  [synthetic order book ~ calibrated to real stats]
-      -> [our exact solver: ring matching + conservation-pinned prices]
-      -> [integer judge (validated 0-disagreement vs production)]
-      -> [scored against production benchmarks]
-
-Calibration targets (measured from mainnet settlements):
-  - batch sizes: 1-2 settled orders per tx (we see the settled subset)
-  - order sizes: log-uniform 10..1000 whole tokens (18-dec units)
-  - limit tightness: 0-20 bps inside a fair price
-  - fill style: mostly full fills; partials occur
+Solver: pass 1 bilateral rings (best-counterpart max-volume), pass 2
+three-cycles among the remainder. All conservation is exact and all
+limits are integer-verified before commit.
 """
 import random
 import sys
@@ -27,12 +17,10 @@ UNIT = 10 ** 18
 FAIR = {("A", "B"): Fraction(3, 2), ("B", "C"): Fraction(5, 4),
         ("C", "D"): Fraction(2), ("D", "A"): Fraction(1, 3),
         ("A", "C"): Fraction(15, 8), ("B", "D"): Fraction(3)}
-PAIRS = [("A", "B"), ("B", "C"), ("C", "D"), ("D", "A"),
-         ("A", "C"), ("B", "D")]
+PAIRS = list(FAIR.keys())
 
 
 def gen_book(rng, n_orders):
-    """Orders crossing fair prices, calibrated tightness."""
     orders = []
     for oid in range(n_orders):
         a, b = rng.choice(PAIRS)
@@ -48,20 +36,12 @@ def gen_book(rng, n_orders):
 
 
 def _best_fill(o1, o2):
-    """Max-volume bilateral exchange honoring BOTH integer limits.
-
-    o1 sells f1 of A, receives b1 of B; o2 sells b1 of B, receives f1
-    of A (exact conservation).
-      o1 limit: b1*S1 >= B1*f1   ->  f1 <= (b1*S1)//B1
-      o2 limit: f1*S2 >= B2*b1   ->  f1 >= ceil(B2*b1/S2)
-    Maximize b1 then f1 (full-fill o1 when possible). The floor-jitter
-    on limits (1-2 wei) makes the top candidate occasionally
-    infeasible; a short decrement search closes the gap.
-    """
+    """Bilateral: o1 sells f1 A receives b1 B; o2 sells b1 B receives f1 A.
+    Limits: b1*S1>=B1*f1, f1*S2>=B2*b1. Max b1 then f1."""
     S1, B1, S2, B2 = o1.sell_amt, o1.buy_min, o2.sell_amt, o2.buy_min
-    if S1 <= 0 or B1 <= 0 or S2 <= 0 or B2 <= 0:
+    if min(S1, B1, S2, B2) <= 0:
         return None
-    b1_hi = min(S2, (S1 * S2) // B2)          # max B for o1's full S1
+    b1_hi = min(S2, (S1 * S2) // B2)
     for b1 in (b1_hi, b1_hi - 1, b1_hi - 2, b1_hi - 3):
         if b1 <= 0:
             return None
@@ -72,12 +52,56 @@ def _best_fill(o1, o2):
     return None
 
 
-def solve_exact(orders):
-    """Bilateral ring matching, best-counterpart selection.
+def _cycle3_fill(o1, o2, o3):
+    """Cycle o1: A->B, o2: B->C, o3: C->A.
 
-    For each order, pick the counterpart maximizing matched volume
-    (not first-fit). Sort by size descending so whales match first.
+    Flows: o1 sells f1(A) and RECEIVES f2(B) from o2; o2 sells f2(B)
+    and receives f3(C) from o3; o3 sells f3(C) and receives f1(A) from
+    o1. Conservation is exact by this rotation. Limits:
+        o1: f2*S1 >= B1*f1 ; o2: f3*S2 >= B2*f2 ; o3: f1*S3 >= B3*f3
+    Feasible (in the small) iff l1*l2*l3 <= 1 with li = Bi/Si.
+    Try each order as the fully-filled anchor; verify exactly.
     """
+    l1 = Fraction(o1.buy_min, o1.sell_amt)
+    l2 = Fraction(o2.buy_min, o2.sell_amt)
+    l3 = Fraction(o3.buy_min, o3.sell_amt)
+    if l1 * l2 * l3 > 1:
+        return None
+    S1, S2, S3 = o1.sell_amt, o2.sell_amt, o3.sell_amt
+    B1, B2, B3 = o1.buy_min, o2.buy_min, o3.buy_min
+
+    def ceil_fr(fr, x):
+        return -((-fr.numerator * x) // fr.denominator)
+
+    cands = []
+    f1 = S1
+    f2 = ceil_fr(l1, f1)                      # o1 needs f2 >= l1*f1
+    f3 = ceil_fr(l2, f2)                      # o2 needs f3 >= l2*f2
+    cands.append((f1, f2, f3))
+    f2 = S2
+    f3 = ceil_fr(l2, f2)
+    f1 = ceil_fr(l3, f3)                      # o3 needs f1 >= l3*f3
+    cands.append((f1, f2, f3))
+    f3 = S3
+    f1 = ceil_fr(l3, f3)
+    f2 = ceil_fr(l1, f1)
+    cands.append((f1, f2, f3))
+
+    best = None
+    for f1, f2, f3 in cands:
+        f1, f2, f3 = min(f1, S1), min(f2, S2), min(f3, S3)
+        if min(f1, f2, f3) <= 0:
+            continue
+        if (f2 * S1 >= B1 * f1 and f3 * S2 >= B2 * f2
+                and f1 * S3 >= B3 * f3):
+            v = f1 + f2 + f3
+            if best is None or v > best[0]:
+                best = (v, f1, f2, f3)
+    return best
+
+
+def solve_exact(orders):
+    """Pass 1: bilateral best-counterpart rings. Pass 2: 3-cycles."""
     fills, buys = {}, {}
     by_pair = {}
     for o in orders:
@@ -105,11 +129,48 @@ def solve_exact(orders):
                 buys[o2.oid] = f1
                 used.add(o1.oid)
                 used.add(o2.oid)
+
+    # pass 2: 3-cycles among remaining orders
+    by_dir = {}
+    for o in orders:
+        if o.oid not in used:
+            by_dir.setdefault((o.sell_tok, o.buy_tok), []).append(o)
+    for (a, b), l1 in list(by_dir.items()):
+        for (b2, c), l2 in list(by_dir.items()):
+            if b2 != b:
+                continue
+            l3 = by_dir.get((c, a))
+            if not l3:
+                continue
+            done = False
+            for o1 in l1:
+                if done or o1.oid in used:
+                    continue
+                for o2 in l2:
+                    if o2.oid in used:
+                        continue
+                    for o3 in l3:
+                        if o3.oid in used:
+                            continue
+                        r = _cycle3_fill(o1, o2, o3)
+                        if r:
+                            _, f1, f2, f3 = r
+                            fills[o1.oid] = f1
+                            buys[o1.oid] = f2
+                            fills[o2.oid] = f2
+                            buys[o2.oid] = f3
+                            fills[o3.oid] = f3
+                            buys[o3.oid] = f1
+                            used.update((o1.oid, o2.oid, o3.oid))
+                            done = True
+                            break
+                    if done:
+                        break
     return fills, buys
 
 
 def solve_float64(orders):
-    """Same partial-fill ring structure; float64 rates and int() casts."""
+    """Baseline: same partial-fill structure, float64 + int() casts."""
     fills, buys = {}, {}
     by_pair = {}
     for o in orders:
@@ -122,18 +183,17 @@ def solve_float64(orders):
             for o2 in by_pair.get((b1k, s1), []):
                 if o2.oid in used or o2.oid == o1.oid:
                     continue
-                # float64 sizing
-                r_o1 = o1.buy_min / o1.sell_amt        # B per A
-                r_o2 = o2.buy_min / o2.sell_amt        # A per B
+                r_o1 = o1.buy_min / o1.sell_amt
+                r_o2 = o2.buy_min / o2.sell_amt
                 b1 = int(min(o2.sell_amt, o1.sell_amt / r_o2))
                 f1 = int(min(o1.sell_amt, o2.sell_amt / r_o1))
-                # commit whatever is consistent-ish in float
                 if b1 > 0 and f1 > 0:
                     fills[o1.oid] = f1
                     buys[o1.oid] = b1
                     fills[o2.oid] = b1
                     buys[o2.oid] = f1
-                    used.add(o1.oid); used.add(o2.oid)
+                    used.add(o1.oid)
+                    used.add(o2.oid)
                     break
     return fills, buys
 
@@ -153,40 +213,34 @@ def surplus(orders, fills, buys):
 
 def main(n_batches=300, seed=11):
     rng = random.Random(seed)
-    st = dict(exact_valid=0, f64_valid=0, n=0,
-              exact_vol=0, f64_vol=0, exact_sup=Fraction(0),
-              f64_sup=Fraction(0), n_orders=0, matched_pairs=0)
+    ex_v = f_v = 0
+    ex_vol = f_vol = 0
+    ex_sup = Fraction(0)
+    f_sup = Fraction(0)
     for _ in range(n_batches):
-        n = rng.randrange(4, 17)          # full book: 4-16 orders
+        n = rng.randrange(4, 17)
         orders = gen_book(rng, n)
-        st["n_orders"] += n
-
-        f_f, f_b = solve_exact(orders)
-        ok_e, _ = validate_settlement(orders, f_f, f_b)
-        if ok_e:
-            st["exact_valid"] += 1
-            st["exact_vol"] += volume(orders, f_f)
-            st["exact_sup"] += surplus(orders, f_f, f_b)
-        g_f, g_b = solve_float64(orders)
-        ok_f, _ = validate_settlement(orders, g_f, g_b)
-        if ok_f:
-            st["f64_valid"] += 1
-            st["f64_vol"] += volume(orders, g_f)
-            st["f64_sup"] += surplus(orders, g_f, g_b)
-
-    n = n_batches
+        f, b = solve_exact(orders)
+        ok, _ = validate_settlement(orders, f, b)
+        if ok:
+            ex_v += 1
+            ex_vol += volume(orders, f)
+            ex_sup += surplus(orders, f, b)
+        else:
+            print("!! EXACT INVALID -- BUG")
+        gf, gb = solve_float64(orders)
+        ok2, _ = validate_settlement(orders, gf, gb)
+        if ok2:
+            f_v += 1
+            f_vol += volume(orders, gf)
+            f_sup += surplus(orders, gf, gb)
     print("=" * 64)
-    print(f"  TOURNAMENT: {n} synthetic books, {st['n_orders']} orders "
-          f"({st['n_orders']//n}/book avg)")
+    print(f"  TOURNAMENT (3-cycles enabled): {n_batches} books")
     print("=" * 64)
-    print(f"exact solver : valid {st['exact_valid']}/{n}"
-          f" ({st['exact_valid']*100//n}%)  "
-          f"volume {st['exact_vol']:,}  "
-          f"surplus {float(st['exact_sup']):,.3f}")
-    print(f"float64      : valid {st['f64_valid']}/{n}"
-          f" ({st['f64_valid']*100//n}%)  "
-          f"volume {st['f64_vol']:,}  "
-          f"surplus {float(st['f64_sup']):,.3f}")
+    print(f"exact : valid {ex_v}/{n_batches}  volume {ex_vol:,}  "
+          f"surplus {float(ex_sup):.3e}")
+    print(f"f64   : valid {f_v}/{n_batches}  volume {f_vol:,}  "
+          f"surplus {float(f_sup):.3e}")
     print("=" * 64)
 
 
