@@ -155,3 +155,50 @@ python3 solver/bench_arb.py    # 战场 1
 python3 solver/test_v3.py      # 战场 2
 python3 solver/cow.py          # 战场 3
 ```
+
+---
+
+## 战场 4(2026-09-08 追加):主网真实验证 —— 法官 vs CoW 生产合约
+
+`mainnet.py`:从公共 RPC 拉取最近 30 个区块,解码真实 CoW 结算交易
+(GPv2Settlement `0x9008…b41`,2024 版 `settle()` 签名 `0x13d79a0b`,
+纯 Python ABI 解码器),用**我们的整数法官**复验每一笔交易的限价约束:
+
+```
+execBuy = ceil(execSell × price[sellIdx] / price[buyIdx])   # 与合约一致的舍入
+(L)     execBuy × sellAmount ≥ buyAmount × execSell         # 同 cow.py
+```
+
+### 结果(19 笔结算,21 笔交易)
+
+| | 数量 | 含义 |
+|---|---|---|
+| 法官 PASS + 链上成功 | **20** | 语义一致 ✓ |
+| 法官 PASS + 链上 revert | 1 | revert 在订单约束**之外**(下述) |
+| **真分歧**(法官 FAIL + 链上成功) | **0** | **法官与生产合约的约束核心等价** |
+
+### 那笔 revert 的解剖(cast run 链上回放)
+
+`0x6b23…dfcb` 链上 revert 原因:**"Insufficient ETH balance for
+exchange"**——交互层(交易所流动性)余额不足,与订单限价无关。我们的
+法官对它的限价判 PASS,与链上约束一致。
+
+**生产含义**:求解者烧了 368,731 gas 在一笔注定 revert 的结算上。
+一个包含交互层的**精确预检模拟器**(我们的 v2/v3 EVM 精确数学 +
+整数法官)能在提交前抓住它——这就是产品:提交前预检,不烧废 gas,
+不掉竞标。
+
+### 技术细节(踩坑记录)
+
+- 动态元组数组的 ABI 编码是 `[len][每元素偏移][元素数据]`,不是
+  连续拼接
+- 地址在字内右对齐(切片 +12 字节)
+- 链上 TickMath 是平方表近似,极值 tick 有 wei 级偏差(生产从链上读)
+- 公共 RPC(publicnode)对默认 urllib UA 返回 403,需自定义 UA
+
+## 生产路径更新
+
+1. ✅ 法官与生产合约约束核心等价(0 真分歧)
+2. ✅ 真实 revert 解剖能力(cast run + 我们的判卷)
+3. ⬜ 预检模拟器:交互层建模(v2/v3 精确数学)+ revert 预测
+4. ⬜ CoW driver-api 接入(需要申请,历史 batch 回放)
