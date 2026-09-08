@@ -47,49 +47,64 @@ def gen_book(rng, n_orders):
     return orders
 
 
-def solve_exact(orders):
-    """Bilateral ring matching with PARTIAL fills and exact conservation.
+def _best_fill(o1, o2):
+    """Max-volume bilateral exchange honoring BOTH integer limits.
 
-    For a pair (o1 sells A wants B; o2 sells B wants A), fill the side
-    that binds: f1 A is exchanged for b1 B; conservation holds exactly
-    (A: f1 in = f1 out; B: b1 in = b1 out); limits preserved by
-    construction:
-        b1*S1 >= B1*f1   and   f1*S2 >= B2*b1
-    Maximize volume: full-fill one side, cap the other by its limit.
+    o1 sells f1 of A, receives b1 of B; o2 sells b1 of B, receives f1
+    of A (exact conservation).
+      o1 limit: b1*S1 >= B1*f1   ->  f1 <= (b1*S1)//B1
+      o2 limit: f1*S2 >= B2*b1   ->  f1 >= ceil(B2*b1/S2)
+    Maximize b1 then f1 (full-fill o1 when possible). The floor-jitter
+    on limits (1-2 wei) makes the top candidate occasionally
+    infeasible; a short decrement search closes the gap.
+    """
+    S1, B1, S2, B2 = o1.sell_amt, o1.buy_min, o2.sell_amt, o2.buy_min
+    if S1 <= 0 or B1 <= 0 or S2 <= 0 or B2 <= 0:
+        return None
+    b1_hi = min(S2, (S1 * S2) // B2)          # max B for o1's full S1
+    for b1 in (b1_hi, b1_hi - 1, b1_hi - 2, b1_hi - 3):
+        if b1 <= 0:
+            return None
+        f1_max = min(S1, (b1 * S1) // B1)
+        f1_min = -((-B2 * b1) // S2)
+        if f1_min <= f1_max:
+            return f1_max, b1
+    return None
+
+
+def solve_exact(orders):
+    """Bilateral ring matching, best-counterpart selection.
+
+    For each order, pick the counterpart maximizing matched volume
+    (not first-fit). Sort by size descending so whales match first.
     """
     fills, buys = {}, {}
     by_pair = {}
     for o in orders:
         by_pair.setdefault((o.sell_tok, o.buy_tok), []).append(o)
-
-    def commit(o1, o2, f1, b1):
-        fills[o1.oid] = f1
-        buys[o1.oid] = b1          # o1 receives b1 of B
-        fills[o2.oid] = b1         # o2 sells exactly b1 of B
-        buys[o2.oid] = f1          # o2 receives exactly f1 of A
+    for lst in by_pair.values():
+        lst.sort(key=lambda o: -o.sell_amt)
 
     used = set()
     for (s1, b1k), olist in by_pair.items():
         for o1 in olist:
             if o1.oid in used:
                 continue
+            best = None
             for o2 in by_pair.get((b1k, s1), []):
                 if o2.oid in used or o2.oid == o1.oid:
                     continue
-                # try full-fill o1: b1 = min(S2, S1*S2 // B2)
-                b1_cap = (o1.sell_amt * o2.sell_amt) // o2.buy_min
-                b1 = min(o2.sell_amt, b1_cap)
-                if b1 * o1.sell_amt >= o1.buy_min * o1.sell_amt and b1 > 0:
-                    commit(o1, o2, o1.sell_amt, b1)
-                    used.add(o1.oid); used.add(o2.oid)
-                    break
-                # else full-fill o2: f1 = min(S1, S2*S1 // B1)
-                f1_cap = (o2.sell_amt * o1.sell_amt) // o1.buy_min
-                f1 = min(o1.sell_amt, f1_cap)
-                if f1 * o2.sell_amt >= o2.buy_min * o2.sell_amt and f1 > 0:
-                    commit(o1, o2, f1, o2.sell_amt)
-                    used.add(o1.oid); used.add(o2.oid)
-                    break
+                r = _best_fill(o1, o2)
+                if r and (not best or r[0] > best[0]):
+                    best = (r[0], r[1], o2)
+            if best:
+                f1, b1, o2 = best
+                fills[o1.oid] = f1
+                buys[o1.oid] = b1
+                fills[o2.oid] = b1
+                buys[o2.oid] = f1
+                used.add(o1.oid)
+                used.add(o2.oid)
     return fills, buys
 
 
