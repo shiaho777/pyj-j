@@ -83,13 +83,17 @@ def replay_one(our_txh):
         return None
 
     def predict(sqrtP, L, fee, o):
+        # V3 Swap event amounts are POOL balance deltas: positive = token
+        # flowed INTO the pool. token0-in: amount0>0, out=-amount1.
+        # token1-in: amount1>0, out=-amount0. (The old token1-in branch
+        # had these signs backwards -- caught while building scan.py.)
         if o["amount0"] > 0:
             a_in_gross, a_out_chain = o["amount0"], -o["amount1"]
             s_next, used, a_out = swap_within_tick_exact_in(
                 sqrtP, L, a_in_gross * (1_000_000 - fee) // 1_000_000,
                 0, True)
         else:
-            a_in_gross, a_out_chain = -o["amount1"], o["amount0"]
+            a_in_gross, a_out_chain = o["amount1"], -o["amount0"]
             s_next = get_next_sqrt_price_from_amount1_rounding_down(
                 sqrtP, L, a_in_gross * (1_000_000 - fee) // 1_000_000)
             a_out = get_amount0_delta(sqrtP, s_next, L, False)
