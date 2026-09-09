@@ -589,3 +589,55 @@ ETH 池 0x677c5f13…(uniswap-v3,极端价格 sqrtP≈2.5e35):尘量输入
 出现在同窗口即被 factory() 标记)、LEAD 追查、`make scan` 一条
 命令可重复。`make verify` 跑全套电池(数学验证+锦标赛+压力矩阵,
 全绿)。
+
+## 战场 14(2026-09-09):LEAD 追查 —— 对称穿越定案 + 块时间捕获破归档墙
+
+### ETH LEAD(0x677c5f13…)破案过程
+
+1. **回执仍在视野内**(33 条日志:多跳 arb,V2 池 + V3 池 + USDT/WETH
+   转账);V3 池上两笔连续 swap,对内无池事件 → 前态无误
+2. **单段模型物理排除**:直线 delta 比事件输出多 2 wei;输入侧短缺
+   6e10 wei;费率无法解释(隐含 270 vs fee()=100)
+3. **tick 位图大范围扫描**(words [1150,1190] = 7700 tick):零初始化
+   tick;但活跃 L=1.75e22 必须来自宽/全范围头寸
+4. **判定:对称多段穿越**——swap 完整穿过一个窄头寸 C(进入 +ΔL、
+   离出 −ΔL,终态 L = 起始 L,这就是"无净输入可复现价格"的原因),
+   **C 在 swap 后被销毁**(销毁不移动价格,与池冻结自洽,当前位图
+   不可见)。确定性重建需历史 tick —— 归档付费墙之内
+
+### 破墙:块时间捕获(native archive)
+
+付费墙只挡迟到者。扫描器现在在 LEAD 分类的**瞬间**自动快照
+tick 位图 + ticks + slot0(捕获函数 `tickwalk.capture_tick_context`),
+存入 scanlog——我们到达时世界还新鲜。同时补上非循环的
+exactOutput 检验(pass 2b:从事件终态价格反推双腿金额精确对账;
+旧循环形式用含舍入损耗的事件输出去推价格,存在尘埃盲区)。
+
+### 一次性全链跑完
+
+| 链 | 对 | 结果 |
+|---|---|---|
+| eth | 30 | **30/30 逐位精确(100%)**——26 exactInput + 4 exactOutput |
+| bsc | 0 | 结构性饥饿(前战场,回执视野约束) |
+| base | 5 | 2 MATCH + 1 MATCH-OUT + **1 FEE-DIFF + 1 LEAD** |
+| arb | 0 | 稀疏窗口 |
+
+### Base 的猎物:Aerodrome Slipstream
+
+两个异常同窗命中**同一未知工厂** 0x5e7bb104…,basescan 验明:
+**Aerodrome Slipstream**(Base 的 CL 实现,V3 事件签名兼容):
+
+- FEE-DIFF:隐含费率精确锁定 2508,fee()=2504 ——**动态费率在
+  交换与读取之间发生了变化**,直接证据
+- LEAD 池:WETH/USDC,fee()=**692**(非标准档位 = 动态费率池),
+  结构性价格异常,tick 快照已捕获
+- C 线的 fork 靶子就此确认:真实交易量 + 年轻代码 + 动态费率 +
+  V3 事件兼容。下一战:拉 Slipstream 核心源码,与 v3-core
+  数学逐行对差,用**它自己的语义**重放它的交换
+
+### CI 自动化
+
+`.github/workflows/scan.yml`:每 6 小时跑一个 eth 窗口,LEAD
+自动捕获 tick 快照,scanlog 自动提交累积。人不再定期跑,机器跑。
+
+复现:`make scan`;历史:`solver/scanlog/*.jsonl`

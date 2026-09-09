@@ -46,6 +46,7 @@ import urllib.request
 
 sys.path.insert(0, ".")
 from solver.l4 import V3_TOPIC, parse_v3_swap            # noqa: E402
+from solver.tickwalk import capture_tick_context          # noqa: E402
 from solver.v3math import (                               # noqa: E402
     get_amount0_delta, get_amount1_delta,
     get_next_sqrt_price_from_amount0_rounding_up,
@@ -253,6 +254,20 @@ def classify_pair(ev1, ev2, fee):
         if s_out == target and amt_in + fee_amt == gross:
             return dict(cls="MATCH-OUT")
 
+    # pass 2b: non-circular exactOutput check -- the circular form above
+    # derives the price from the event's OUTPUT, which is the post-rounding
+    # delta, not the desired amount the chain priced from. Here both legs
+    # are derived from the event's FINAL PRICE and must settle exactly.
+    if zf1:
+        in_pred = get_amount0_delta(sqrtP, target, L, True)
+        out_pred = get_amount1_delta(sqrtP, target, L, False)
+    else:
+        in_pred = get_amount1_delta(sqrtP, target, L, True)
+        out_pred = get_amount0_delta(sqrtP, target, L, False)
+    fee_pred = muldiv_ru(in_pred, fee, FEE_ONE - fee)
+    if out_pred == out_chain and in_pred + fee_pred == gross:
+        return dict(cls="MATCH-OUT")
+
     ni = net_interval(sqrtP, L, gross, target, zf1)
     if ni is None:
         return dict(cls="LEAD",
@@ -414,6 +429,17 @@ def scan(chain, n_blocks=None, chunk=None):
                 continue
             r = classify_pair(ev1, ev2, fee)
             r.update(tx=tx, pool=pool, factory=ftag)
+            if r["cls"] in ("LEAD", "INTERNAL-BUG"):
+                # capture the tick structure NOW, at block time: crossed
+                # positions get burned (the first LEAD's position was),
+                # and historical ticks sit behind the archive paywall.
+                # Arriving fresh IS the native archive.
+                r["tick_context"] = capture_tick_context(
+                    pool, ev1["sqrtP"], ev2["sqrtP"],
+                    lambda m, p: rpc_retry(cfg["read"], m, p))
+                nt = len(r["tick_context"].get("ticks", {}))
+                print(f"  [lead] tick context captured for {pool[:14]}…: "
+                      f"{nt} initialized ticks in range", flush=True)
             results.append(r)
     return results, n_pairs_dropped, head, n_blocks, len(logs)
 
@@ -493,7 +519,8 @@ def log_result(chain, head, n_blocks, n_events, results, counts):
                leads=[{k: r[k] for k in ("tx", "pool", "factory", "cls",
                                          "why", "sqrtP", "L", "gross",
                                          "out_chain", "target", "zf1",
-                                         "fee") if k in r}
+                                         "fee", "tick_context")
+                      if k in r}
                       for r in results if r["cls"] in ("LEAD", "INTERNAL-BUG",
                                                        "FEE-DIFF")])
     with open(os.path.join(LOGDIR, f"{chain}.jsonl"), "a") as f:
