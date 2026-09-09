@@ -9,7 +9,7 @@ else
   export LD_LIBRARY_PATH := $(PYJ_LIBPATH)
 endif
 
-.PHONY: tally-test demo shootout cards vendor host all
+.PHONY: tally-test demo shootout cards vendor host all scan scan-all verify
 
 # Full Tally test suite: unit + MCP stdio integration (73 checks)
 tally-test:
@@ -38,3 +38,18 @@ vendor:
 
 # Full gate: tests + shootout + cards + host + vendor
 all: tally-test shootout cards host vendor
+
+# C-line: differential scan, one live window on ethereum (results
+# accumulate in solver/scanlog/<chain>.jsonl)
+scan:
+	python3 solver/scan.py eth
+
+scan-all:
+	python3 solver/scan.py eth bsc base arb
+
+# Solver battery: math validation + closed-loop tournament + full
+# stress matrix (exact solver must stay 100% valid or this fails)
+verify:
+	python3 solver/test_v3.py
+	python3 solver/tournament.py
+	python3 solver/stress.py
