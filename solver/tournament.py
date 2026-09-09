@@ -11,7 +11,8 @@ import sys
 from fractions import Fraction
 
 sys.path.insert(0, ".")
-from solver.cow import Order, validate_settlement            # noqa: E402
+from solver.amm import make_pools, max_route                    # noqa: E402
+from solver.cow import Order, validate_settlement               # noqa: E402
 
 UNIT = 10 ** 18
 FAIR = {("A", "B"): Fraction(3, 2), ("B", "C"): Fraction(5, 4),
@@ -100,8 +101,20 @@ def _cycle3_fill(o1, o2, o3):
     return best
 
 
-def solve_exact(orders):
-    """Pass 1: bilateral best-counterpart rings. Pass 2: 3-cycles."""
+def _routable(orders, fills):
+    """Orders with remaining sell volume, tightest limit first.
+
+    The tightest limits lose routability fastest as the pool price
+    walks away, so they route first; loose orders can still route after.
+    """
+    rem = [o for o in orders if o.sell_amt - fills.get(o.oid, 0) > 0]
+    rem.sort(key=lambda o: (-Fraction(o.buy_min, o.sell_amt), o.oid))
+    return rem
+
+
+def solve_exact(orders, pools=None):
+    """Pass 1: bilateral best-counterpart rings. Pass 2: 3-cycles.
+    Pass 3: route remainders through AMM liquidity (EVM-exact)."""
     fills, buys = {}, {}
     by_pair = {}
     for o in orders:
@@ -166,10 +179,24 @@ def solve_exact(orders):
                             break
                     if done:
                         break
+
+    # pass 3: AMM backstop for the remainder (peers first, pools second
+    # -- the CoW architecture: coincidence of wants beats AMM fees)
+    if pools:
+        for o in _routable(orders, fills):
+            left = o.sell_amt - fills.get(o.oid, 0)
+            pool = pools.get(frozenset((o.sell_tok, o.buy_tok)))
+            if pool is None:
+                continue
+            x = max_route(pool, o.sell_tok, o.sell_amt, o.buy_min, left)
+            if x > 0:
+                y = pool.swap(o.sell_tok, x)
+                fills[o.oid] = fills.get(o.oid, 0) + x
+                buys[o.oid] = buys.get(o.oid, 0) + y
     return fills, buys
 
 
-def solve_float64(orders):
+def solve_float64(orders, pools=None):
     """Baseline: same partial-fill structure, float64 + int() casts."""
     fills, buys = {}, {}
     by_pair = {}
@@ -195,6 +222,30 @@ def solve_float64(orders):
                     used.add(o1.oid)
                     used.add(o2.oid)
                     break
+    # float64 pass 3: same backstop, float arithmetic. The float brain
+    # sizes the crossing and the payout; the chain executes evm_out()
+    # exactly. Whatever disagrees, the judge catches.
+    if pools:
+        for o in _routable(orders, fills):
+            left = o.sell_amt - fills.get(o.oid, 0)
+            pool = pools.get(frozenset((o.sell_tok, o.buy_tok)))
+            if pool is None:
+                continue
+            if o.sell_tok == pool.tok_a:
+                r_in, r_out = pool.r_a, pool.r_b
+            else:
+                r_in, r_out = pool.r_b, pool.r_a
+            # float crossing: 997*x*r_out*S == B*x*(1000*r_in + 997*x)
+            xstar = r_out * o.sell_amt / o.buy_min - 1000 * r_in / 997
+            x = int(min(left, xstar))
+            if x <= 0:
+                continue
+            y_claim = int(997 * x * r_out / (1000 * r_in + 997 * x))
+            y_true = pool.swap(o.sell_tok, x)     # the chain pays exactly
+            if y_claim <= 0:
+                continue
+            fills[o.oid] = fills.get(o.oid, 0) + x
+            buys[o.oid] = buys.get(o.oid, 0) + y_claim
     return fills, buys
 
 
@@ -211,36 +262,58 @@ def surplus(orders, fills, buys):
     return t
 
 
-def main(n_batches=300, seed=11):
+def main(n_batches=300, seed=11, depth_units=1_000_000, offset_bps=60):
     rng = random.Random(seed)
-    ex_v = f_v = 0
-    ex_vol = f_vol = 0
-    ex_sup = Fraction(0)
-    f_sup = Fraction(0)
+    pool_rng = random.Random(seed + 1000)   # separate stream: books keep
+    ex_v = amm_v = f_v = 0                  # the battle-9 sequence exactly
+    ex_vol = amm_vol = f_vol = 0
+    ex_sup = amm_sup = f_sup = Fraction(0)
+    routed = 0
     for _ in range(n_batches):
         n = rng.randrange(4, 17)
         orders = gen_book(rng, n)
-        f, b = solve_exact(orders)
+        pools = make_pools(FAIR, depth_units, offset_bps, pool_rng)
+
+        f, b = solve_exact(orders)                     # peers only
         ok, _ = validate_settlement(orders, f, b)
         if ok:
             ex_v += 1
             ex_vol += volume(orders, f)
             ex_sup += surplus(orders, f, b)
         else:
-            print("!! EXACT INVALID -- BUG")
-        gf, gb = solve_float64(orders)
-        ok2, _ = validate_settlement(orders, gf, gb)
+            print("!! EXACT (peer) INVALID -- BUG")
+
+        f2, b2 = solve_exact(orders, pools)            # peers + amm
+        ok2, _ = validate_settlement(orders, f2, b2, pools)
         if ok2:
+            amm_v += 1
+            amm_vol += volume(orders, f2)
+            amm_sup += surplus(orders, f2, b2)
+            for p in pools.values():
+                routed += sum(x for _, x, _ in p.ops)
+        else:
+            print("!! EXACT (+AMM) INVALID -- BUG")
+
+        p2 = {k: p.snapshot() for k, p in pools.items()}
+        gf, gb = solve_float64(orders, p2)
+        ok3, _ = validate_settlement(orders, gf, gb, p2)
+        if ok3:
             f_v += 1
             f_vol += volume(orders, gf)
             f_sup += surplus(orders, gf, gb)
+
     print("=" * 64)
-    print(f"  TOURNAMENT (3-cycles enabled): {n_batches} books")
+    print(f"  TOURNAMENT (+AMM routing): {n_batches} books, pools at "
+          f"depth {depth_units:,} units, price offset +/-{offset_bps}bps")
     print("=" * 64)
-    print(f"exact : valid {ex_v}/{n_batches}  volume {ex_vol:,}  "
-          f"surplus {float(ex_sup):.3e}")
-    print(f"f64   : valid {f_v}/{n_batches}  volume {f_vol:,}  "
-          f"surplus {float(f_sup):.3e}")
+    print(f"exact (peer only) : valid {ex_v}/{n_batches}  "
+          f"volume {ex_vol:,}  surplus {float(ex_sup):.3e}")
+    print(f"exact (+amm)       : valid {amm_v}/{n_batches}  "
+          f"volume {amm_vol:,} ({(amm_vol/ex_vol-1)*100:+.1f}%)  "
+          f"surplus {float(amm_sup):.3e}  "
+          f"routed {routed//UNIT:,} units")
+    print(f"f64   (+amm)       : valid {f_v}/{n_batches}  "
+          f"volume {f_vol:,}  surplus {float(f_sup):.3e}")
     print("=" * 64)
 
 

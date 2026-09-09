@@ -47,8 +47,15 @@ class Order:
         self.buy_min = buy_min            # integer base units
 
 
-def validate_settlement(orders, fills, buys):
-    """The on-chain judge. Integer-only. Returns (ok, reason)."""
+def validate_settlement(orders, fills, buys, pools=None):
+    """The on-chain judge. Integer-only. Returns (ok, reason).
+
+    With pools (solver.amm.V2Pool dict): the AMM interaction layer is
+    double-entry checked too. Every recorded pool op is replayed from
+    the pool's INITIAL reserves with EVM-exact math -- the claimed
+    output must equal what the chain would actually pay -- and token
+    conservation becomes  sold + ext_out == bought + ext_in  per token.
+    """
     for o in orders:
         f = fills.get(o.oid, 0)
         b = buys.get(o.oid, 0)
@@ -65,10 +72,33 @@ def validate_settlement(orders, fills, buys):
         b = buys.get(o.oid, 0)
         sold[o.sell_tok] = sold.get(o.sell_tok, 0) + f
         bought[o.buy_tok] = bought.get(o.buy_tok, 0) + b
-    for tok in set(sold) | set(bought):
-        if sold.get(tok, 0) != bought.get(tok, 0):
-            return False, (f"token {tok}: sold {sold.get(tok,0)} != "
-                           f"bought {bought.get(tok,0)}")
+    ext_in, ext_out = {}, {}
+    if pools:
+        from solver.v2math import evm_out     # lazy: cow stays standalone
+        for pool in pools.values():
+            r_a, r_b = pool.init
+            for sell_tok, x, y in pool.ops:
+                if sell_tok == pool.tok_a:
+                    buy_tok = pool.tok_b
+                    y_true = evm_out(x, r_a, r_b)
+                    r_a += x
+                    r_b -= y_true
+                else:
+                    buy_tok = pool.tok_a
+                    y_true = evm_out(x, r_b, r_a)
+                    r_b += x
+                    r_a -= y_true
+                if y_true != y:
+                    return False, (f"pool {pool.tok_a}/{pool.tok_b} op "
+                                   f"x={x}: claimed out {y} != replay {y_true}")
+                ext_in[sell_tok] = ext_in.get(sell_tok, 0) + x
+                ext_out[buy_tok] = ext_out.get(buy_tok, 0) + y
+    for tok in set(sold) | set(bought) | set(ext_in) | set(ext_out):
+        lhs = sold.get(tok, 0) + ext_out.get(tok, 0)
+        rhs = bought.get(tok, 0) + ext_in.get(tok, 0)
+        if lhs != rhs:
+            return False, (f"token {tok}: sold+ext_out {lhs} != "
+                           f"bought+ext_in {rhs}")
     return True, "ok"
 
 

@@ -18,8 +18,9 @@ import sys
 from fractions import Fraction
 
 sys.path.insert(0, ".")
-from solver.cow import Order, validate_settlement       # noqa: E402
-from solver.tournament import solve_exact, solve_float64  # noqa: E402
+from solver.amm import make_pools                            # noqa: E402
+from solver.cow import Order, validate_settlement            # noqa: E402
+from solver.tournament import solve_exact, solve_float64     # noqa: E402
 
 UNIT = 10 ** 18
 FAIR = {("A", "B"): Fraction(3, 2), ("B", "C"): Fraction(5, 4),
@@ -58,39 +59,50 @@ def offered_sell(orders):
     return total
 
 
-def run_scenario(name, rng, n_books, **kw):
+def run_scenario(name, rng, n_books, pool=None, **kw):
+    """pool=None: peer-only (battle-9 metric). pool=(offset_bps, depth):
+    AMM backstop on; capture is measured against ALL offered sell
+    volume, since a pool takes any side."""
     ex_v = f_v = 0
     ex_vol = f_vol = 0
     offered = 0
+    routed = 0
     ex_orders_filled = 0
     n_orders = 0
     for _ in range(n_books):
         orders = gen_book(rng, kw["n"], kw["tight"], kw["lo"], kw["hi"],
                            kw.get("one_side", False))
         n_orders += len(orders)
-        off = offered_sell(orders)
+        off = (offered_sell(orders) if pool is None
+               else sum(o.sell_amt for o in orders))
         offered += off
 
-        f, b = solve_exact(orders)
-        ok, _ = validate_settlement(orders, f, b)
+        pools = (make_pools(FAIR, pool[1], pool[0], rng) if pool else None)
+        f, b = solve_exact(orders, pools)
+        ok, _ = validate_settlement(orders, f, b, pools)
         if ok:
             ex_v += 1
             ex_vol += sum(f.values())
             ex_orders_filled += len(f)
+            if pools:
+                routed += sum(x for p in pools.values() for _, x, _ in p.ops)
         else:
             print(f"  !! EXACT SOLVER INVALID in scenario {name} -- BUG")
 
-        gf, gb = solve_float64(orders)
-        ok2, _ = validate_settlement(orders, gf, gb)
+        p2 = ({k: p.snapshot() for k, p in pools.items()} if pools else None)
+        gf, gb = solve_float64(orders, p2)
+        ok2, _ = validate_settlement(orders, gf, gb, p2)
         if ok2:
             f_v += 1
             f_vol += sum(gf.values())
 
     cap = ex_vol / offered if offered else 0
+    rout = (routed / ex_vol * 100) if ex_vol else 0
     print(f"{name:<26} exact: {ex_v}/{n_books} valid, capture "
           f"{cap*100:5.1f}%, filled {ex_orders_filled}/{n_orders} orders "
           f"| f64: {f_v}/{n_books} valid, vol-ratio "
-          f"{(f_vol/ex_vol if ex_vol else 0)*100:5.1f}%")
+          f"{(f_vol/ex_vol if ex_vol else 0)*100:5.1f}%"
+          + (f", routed {rout:4.1f}%" if pool else ""))
     return dict(name=name, cap=cap, f64_valid=f_v, n=n_books)
 
 
@@ -121,6 +133,23 @@ def main():
     run_scenario("one-sided book", rng, 100, **{**base, "one_side": True})
     rng2 = random.Random(7)
     run_scenario("exact-boundary dup", rng2, 100, **{**base, "tight": 0})
+
+    print("\n[amm routing: pool price offset vs book fair]")
+    DEPTH = 1_000_000
+    run_scenario("pool aligned 0bps", rng, 200, pool=(0, DEPTH), **base)
+    run_scenario("pool tight +/-15bps", rng, 200, pool=(15, DEPTH), **base)
+    run_scenario("pool normal +/-60bps", rng, 200, pool=(60, DEPTH), **base)
+    run_scenario("pool wide +/-200bps", rng, 200, pool=(200, DEPTH), **base)
+
+    print("\n[amm routing: depth]")
+    run_scenario("shallow 50k units", rng, 200, pool=(60, 50_000), **base)
+    run_scenario("deep 10M units", rng, 200, pool=(60, 10_000_000), **base)
+
+    print("\n[amm routing: adversarial]")
+    run_scenario("one-sided + pools", rng, 100, pool=(60, DEPTH),
+                 **{**base, "one_side": True})
+    run_scenario("razor + stale pools", rng, 200, pool=(200, DEPTH),
+                 **{**base, "tight": 2})
 
     print("\n" + "=" * 96)
 
