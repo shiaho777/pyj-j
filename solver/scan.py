@@ -56,11 +56,24 @@ FEE_ONE = 1_000_000
 Q96 = 2 ** 96
 LOGDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanlog")
 
+# Events that do NOT change swap state (Collect/Flash/gauge fee pulls;
+# verified against Slipstream + v3-core sources). Mint/Burn change active
+# liquidity -> pairs across them stay invalid. Unknown topics stay invalid.
+NEUTRAL_TOPICS = {
+    "0xa89c1c8a741251492622c95237828c75d1dbb03ea956f09e3792ff2a14f4fe62",  # Collect
+    "0xbdbdb71d7860376ba52b25a5028beea23581364a40522f6bcfb86bb1f2dca633",  # Flash
+    "0xec8208dd791fa8ffdc0d7427f3ba9c0ed06f1bce9a86254e6940c10cc1802fef",  # CollectFees
+}
+
 # Uniswap V3 and Pancake V3 factories are deployed at the same address on
 # every chain (deterministic deployment); anything else is worth a look.
 FACTORIES = {
     "0x1f98431c8ad98523631ae4a59f267346ea31f984": "uniswap-v3",
     "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865": "pancake-v3",
+    "0x33128a8fc17869897dce68ed026d694621f6fdfd": "uniswap-v3-base",
+    "0x5e7bb104d84c7cb9b682aac2f3d509f5f406809a": "slipstream",
+    "0xf8f2eb4940cfe7d13603dddd87f123820fc061ef": "cl-factory",
+    "0x0fd83557b2be93617c9c1c1b6fd549401c74558c": "alienbase-v3",
 }
 
 CHAINS = {
@@ -73,12 +86,16 @@ CHAINS = {
     "bsc":  dict(logs="https://bsc.drpc.org",
                  read="https://bsc-rpc.publicnode.com",
                  blocks=100, chunk=15, pace=6.0),
-    "base": dict(logs="https://base.drpc.org",
-                 read="https://base-rpc.publicnode.com",
-                 blocks=100, chunk=15, pace=5.0),
-    "arb":  dict(logs="https://arbitrum.drpc.org",
-                 read="https://arbitrum-rpc.publicnode.com",
-                 blocks=100, chunk=15, pace=5.0),
+    # base/arb: the OFFICIAL L2 endpoints allow topic-only getLogs (no
+    # publicnode-style wall) and serve receipts -- single-provider, no
+    # drpc throttling, no cross-provider aging. bsc stays on drpc (mapped,
+    # structurally thin on free tiers).
+    "base": dict(logs="https://mainnet.base.org",
+                 read="https://mainnet.base.org",
+                 blocks=100, chunk=100, pace=1.0),
+    "arb":  dict(logs="https://arb1.arbitrum.io/rpc",
+                 read="https://arb1.arbitrum.io/rpc",
+                 blocks=400, chunk=100, pace=1.0),
 }
 
 
@@ -338,7 +355,8 @@ def scan(chain, n_blocks=None, chunk=None):
                 break
             except RuntimeError as ex:
                 s = str(ex).lower()
-                transient = ("rate limit" in s or "http 429" in s
+                transient = ("rate limit" in s or "http 4" in s
+                             or "http 5" in s or "internal error" in s
                              or s.startswith("net ") or "timed out" in s)
                 if transient:
                     # never give up to soft bans: long exponential backoff
@@ -363,6 +381,7 @@ def scan(chain, n_blocks=None, chunk=None):
                 continue
             ev["tx"] = l["transactionHash"]
             ev["logIndex"] = int(l["logIndex"], 16)
+            ev["block"] = int(l["blockNumber"], 16)
             key = (l["transactionHash"], ev["pool"])
             groups.setdefault(key, []).append(ev)
             chunk_groups[key] = groups[key]
@@ -381,14 +400,23 @@ def scan(chain, n_blocks=None, chunk=None):
     fees = {}
     factories = {}
 
-    def pool_fee(pool):
-        if pool not in fees:
+    def pool_fee(pool, block):
+        # read fee() at the EVENT's block: dynamic-fee pools (e.g.
+        # Slipstream) change fees over time; latest would drift.
+        # If the block aged out of the read horizon, fall back to latest
+        # -- the implied-fee machinery reports any drift honestly.
+        key = (pool, block)
+        if key not in fees:
             try:
-                fees[pool] = int(rpc_retry(cfg["read"], "eth_call", [
-                    {"to": pool, "data": "0xddca3f43"}, "latest"]), 16)
+                fees[key] = int(rpc_retry(cfg["read"], "eth_call", [
+                    {"to": pool, "data": "0xddca3f43"}, hex(block)]), 16)
             except RuntimeError:
-                fees[pool] = None
-        return fees[pool]
+                try:
+                    fees[key] = int(rpc_retry(cfg["read"], "eth_call", [
+                        {"to": pool, "data": "0xddca3f43"}, "latest"]), 16)
+                except RuntimeError:
+                    fees[key] = None
+        return fees[key]
 
     def pool_factory(pool):
         if pool not in factories:
@@ -401,13 +429,14 @@ def scan(chain, n_blocks=None, chunk=None):
         return factories[pool]
 
     results = []
-    n_pairs_dropped = 0
+    n_pairs_dropped = 0      # non-neutral pool event between the swaps
+    n_pairs_stale = 0        # receipt aged out of the provider horizon
     for (tx, pool), evs in sorted(cand.items()):
         rc_logs = receipt(tx)
         if rc_logs is None or rc_logs == "stale":
-            n_pairs_dropped += len(evs) - 1
+            n_pairs_stale += len(evs) - 1
             continue
-        fee = pool_fee(pool)
+        fee = pool_fee(pool, evs[0]["block"])
         factory = pool_factory(pool)
         ftag = FACTORIES.get(factory, factory or "?")
         for ev1, ev2 in zip(evs, evs[1:]):
@@ -417,6 +446,7 @@ def scan(chain, n_blocks=None, chunk=None):
                 if (l["address"].lower() == pool
                         and li1 < int(l["logIndex"], 16) < li2
                         and l.get("topics")
+                        and l["topics"][0] not in NEUTRAL_TOPICS
                         and l["topics"][0] != V3_TOPIC):
                     clean = False
                     break
@@ -441,10 +471,10 @@ def scan(chain, n_blocks=None, chunk=None):
                 print(f"  [lead] tick context captured for {pool[:14]}…: "
                       f"{nt} initialized ticks in range", flush=True)
             results.append(r)
-    return results, n_pairs_dropped, head, n_blocks, len(logs)
+    return results, n_pairs_dropped, n_pairs_stale, head, n_blocks, len(logs)
 
 
-def report(chain, results, n_dropped):
+def report(chain, results, n_dropped, n_stale=0):
     order = ["MATCH", "MATCH-OUT", "CROSS", "FEE-DIFF", "LEAD",
              "INTERNAL-BUG", "EXOTIC", "DUST"]
     counts = {k: 0 for k in order}
@@ -455,8 +485,10 @@ def report(chain, results, n_dropped):
     print(f"  DIFFERENTIAL SCAN [{chain}] -- our integer math vs chain")
     print("=" * 78)
     print(f"  replayable pairs: {n}"
-          + (f"  (dropped {n_dropped}: pool event between swaps)"
-             if n_dropped else ""))
+          + (f"  (dropped {n_dropped}: non-neutral pool event between swaps)"
+             if n_dropped else "")
+          + (f"  (stale {n_stale}: receipt aged out of horizon)"
+             if n_stale else ""))
     for k in order:
         if counts[k]:
             print(f"  {k:14} {counts[k]:>6}   "
@@ -519,7 +551,7 @@ def log_result(chain, head, n_blocks, n_events, results, counts):
                leads=[{k: r[k] for k in ("tx", "pool", "factory", "cls",
                                          "why", "sqrtP", "L", "gross",
                                          "out_chain", "target", "zf1",
-                                         "fee", "tick_context")
+                                         "fee", "f", "tick_context")
                       if k in r}
                       for r in results if r["cls"] in ("LEAD", "INTERNAL-BUG",
                                                        "FEE-DIFF")])
@@ -537,8 +569,9 @@ def main():
             n_blocks = None
             if i + 1 < len(args) and args[i + 1].isdigit():
                 n_blocks = int(args[i + 1])
-            results, n_dropped, head, nb, n_events = scan(chain, n_blocks)
-            counts = report(chain, results, n_dropped)
+            results, n_dropped, n_stale, head, nb, n_events = scan(
+                chain, n_blocks)
+            counts = report(chain, results, n_dropped, n_stale)
             log_result(chain, head, nb, n_events, results, counts)
             if i + 1 < len(args):
                 time.sleep(20)          # inter-chain cooldown

@@ -641,3 +641,62 @@ exactOutput 检验(pass 2b:从事件终态价格反推双腿金额精确对账;
 自动捕获 tick 快照,scanlog 自动提交累积。人不再定期跑,机器跑。
 
 复现:`make scan`;历史:`solver/scanlog/*.jsonl`
+
+## 战场 15(2026-09-09):Slipstream 源码对差 + 官方端点解锁 L2
+
+### Slipstream 源码对差(GitHub 逐行 diff)
+
+SqrtPriceMath/SwapMath/TickMath/FullMath/TickBitmap:**逐字 fork,零语义
+改动**。CLPool 的分歧全在费率与激励机制:
+
+- `fee` 从 immutable 变**可变状态**,每次 swap 开始读一次
+  (`fee: fee()`),循环内恒定 → 我们的逐交换重放语义成立
+- gauge 费拆分(calculateFees)只动 LP 侧的 feeGrowth/gaugeFees,
+  **不影响交易者金额**,事件金额不受影响
+- 质押流动性(stakedLiquidityNet)并行记账,swap 用的
+  `state.liquidity` 逻辑与 v3 相同
+
+**数据级终验**:FEE-DIFF 事件用隐含费率 2508 重放——价格与输出
+**双双逐位命中**。FEE-DIFF 类就此升级为**费率神谕**:对动态费率池,
+扫描器从事件本身反推交换当时收取的确切费率(区间宽度为零)。
+
+### 基础设施突破:官方 L2 端点无墙
+
+`mainnet.base.org` 与 `arb1.arbitrum.io` **不设 topic-only getLogs 墙**,
+且回执可用 → Base/Arb 切换为官方单源:无限速、无跨源老化、
+100 块窗口一次到位。
+
+| 链 | 窗口 | 对 | 结果 |
+|---|---|---|---|
+| eth | 60 块 | 30 | **30/30 逐位精确(100%)** |
+| base | 100 块 | 64 | 45 MATCH + 5 MATCH-OUT + 14 CROSS,1 FEE-DIFF,**0 LEAD** |
+| arb | 400 块 | 11 | **11/11(100%)**(首批 Arb 对) |
+
+### Base 生态位图(一个窗口)
+
+| 工厂 | 对 | 判定 |
+|---|---|---|
+| uniswap-v3-base(0x33128a8f) | 56 | 全 MATCH |
+| slipstream(0x5e7bb104) | 4 | 全 MATCH(块级费率读取生效) |
+| cl-factory(0xf8f2eb49) | 4 | 2 MATCH + 1 CROSS + **1 大费差** |
+| alienbase-v3(0x0fd83557) | 1 | MATCH |
+
+**大费差**:隐含费率精确锁定 **14250**(1.425%),fee()=13450——差
+800 pips。块级读取仍差 → **费率在同一个块内变动**(块末状态 ≠ 交换
+时状态)。隐含费率神谕照常测得。这是动态费率 fork 的块内动力学证据。
+
+### 修复批次(验证驱动)
+
+- ev["block"] 补丁曾**静默失败**(str.replace 缩进不匹配)——验证跑
+  当场暴露 KeyError,改为带 assert 的补丁
+- 隔断检查白名单:Collect/Flash/CollectFees 中性(源码验证不改
+  swap 状态),Mint/Burn/未知才隔断
+- 费率读取:块级(动态池)→ 归档 403 降级 latest → 隐含费率兜底
+- drop 计数拆分:过期回执 vs 脏对分开报告
+- 5xx 瞬时错误归入退避类
+
+### 复现
+
+```
+python3 solver/scan.py eth base arb   # 官方端点 + drpc,~3 分钟
+```
