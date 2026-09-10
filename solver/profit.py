@@ -63,20 +63,24 @@ def surplus_in(orders, fills, buys, dec, num):
 
 
 def surplus_in_weth(orders, fills, buys, dec, usdc_per_weth=None):
-    """WETH-denominated surplus; falls back to USDC numeraire (converted
-    at the live rate) when the book has no WETH -- doubles the sample."""
+    """Surplus in WETH units (NOT wei); falls back to USDC numeraire
+    (converted at the live rate) when the book has no WETH."""
     s, ok = surplus_in(orders, fills, buys, dec, WETH)
     if ok:
-        return s, "weth"
+        return s / 10 ** 18, "weth"        # clearing-price conversion
+                                           # lands in wei; normalize
     s, ok = surplus_in(orders, fills, buys, dec, USDC)
     if ok and usdc_per_weth:
-        return s / usdc_per_weth, "usdc"
+        # s is in USDC-RAW (6 dec): USDC = s/1e6, WETH = USDC/usd_per_weth
+        return s / (usdc_per_weth * 10 ** 6), "usdc"
     return None, None
 
 
 def gas_weth(txh):
+    """Settlement gas in WETH units (Fraction)."""
     rc = rpc_retry(CHAINS["eth"]["logs"], "eth_getTransactionReceipt", [txh])
-    return int(rc["gasUsed"], 16) * int(rc["effectiveGasPrice"], 16)
+    wei = int(rc["gasUsed"], 16) * int(rc["effectiveGasPrice"], 16)
+    return Fraction(wei, 10 ** 18)
 
 
 def weth_usd():
@@ -115,8 +119,10 @@ def main(n_blocks=100):
     n_conv = n_unconv = n_usdc = 0
     wins = entered = 0
     net_total = Fraction(0)
-    gas_total = 0
+    gas_total = Fraction(0)
+    gas_entered = Fraction(0)
     margins = []
+    log_rows = []
     for r in rows:
         ours, num = surplus_in_weth(r["orders"], r["our_f"], r["our_b"],
                                     r["dec"], usdc_rate)
@@ -126,6 +132,14 @@ def main(n_blocks=100):
         n_usdc += (num == "usdc")
         prod, _ = surplus_in_weth(r["orders"], r["prod_f"], r["prod_b"],
                                   r["dec"], usdc_rate)
+        # absurdity guard: a single CoW auction moving >10 WETH (~$25k)
+        # of pure surplus edge is implausible -- such rows are unit bugs,
+        # not opportunities. Flag, exclude, print.
+        if abs(ours) > 10 or abs(prod) > 10:
+            print(f"  [GUARD] {r['tx'][:16]}… excluded: ours={float(ours):.3e} "
+                  f"prod={float(prod):.3e} WETH ({num}) -- implausible scale")
+            n_unconv += 1
+            continue
         n_conv += 1
         margin = ours - prod                        # WETH (Fraction)
         try:
@@ -134,11 +148,18 @@ def main(n_blocks=100):
             gas = 0
         gas_total += gas
         margins.append((r["tx"], margin, gas))
+        log_rows.append(dict(tx=r["tx"], numeraire=num,
+                             our_weth=float(ours),
+                             prod_weth=float(prod),
+                             margin_weth=float(margin),
+                             gas_weth=float(gas), n_pools=r["n_pools"],
+                             n_orders=r["n_orders"]))
         if margin > 0:
             wins += 1
             if margin > gas:
                 entered += 1
                 net_total += margin - gas
+                gas_entered += gas
 
     print("=" * 70)
     print("  THE MARGIN MODEL -- bid (production + epsilon), keep the rest")
@@ -147,24 +168,31 @@ def main(n_blocks=100):
           f"({n_usdc} via USDC numeraire; {n_unconv} skipped)")
     print(f"  auctions we would WIN   : {wins}/{n_conv}")
     print(f"  auctions worth ENTERING : {entered}/{n_conv}  (margin > gas)")
-    W = Fraction(10 ** 18)                          # wei -> WETH
-    net_w = net_total / W
     if usd:
-        print(f"  net margin (entered)    : {float(net_w):.8f} WETH "
-              f"= ${float(net_w) * usd:,.4f}")
-        per_day = float(net_w) * 72                 # 100 blocks ~ 20 min
+        print(f"  net margin (entered)    : {float(net_total):.8f} WETH "
+              f"= ${float(net_total) * usd:,.4f}")
+        per_day = float(net_total) * 72             # 100 blocks ~ 20 min
         print(f"  extrapolated per day    : {per_day:.6f} WETH "
               f"= ${per_day * usd:,.2f}  (72 windows/day, same rate)")
-        print(f"  gas burned measuring    : {gas_total / 10**18:.6f} ETH "
-              f"= ${gas_total / 10**18 * usd:,.2f}")
+        print(f"  gas of entered auctions : {float(gas_entered):.6f} WETH "
+              f"= ${float(gas_entered) * usd:,.2f}")
     else:
-        print(f"  net margin (entered)    : {float(net_w):.8f} WETH")
+        print(f"  net margin (entered)    : {float(net_total):.8f} WETH")
     if margins:
         margins.sort(key=lambda m: -m[1])
         print("\n  top margins (WETH):")
         for tx, m, g in margins[:8]:
-            print(f"    {tx[:18]}…  margin {float(m / W):+.8f}  "
-                  f"gas {g / 10**18:.6f}  net {float((m - g) / W):+.8f}")
+            print(f"    {tx[:18]}…  margin {float(m):+.8f}  "
+                  f"gas {float(g):.6f}  net {float(m - g):+.8f}")
+    # accumulate for the bid game (battle 22+)
+    import datetime, json, os
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanlog")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "profitlog.jsonl"), "a") as f:
+        f.write(json.dumps(dict(
+            ts=datetime.datetime.utcnow().isoformat() + "Z",
+            head=head, usd=usd, rows=log_rows)) + "\n")
+    print(f"\n  (logged {len(log_rows)} auction rows to profitlog.jsonl)")
     print("=" * 70)
     print("  read this as the PRICE OF THE EDGE, not a P&L: the bid game")
     print("  (blind, competitive, epsilon-sensitive) and the fuller real")

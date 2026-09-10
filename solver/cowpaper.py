@@ -104,21 +104,20 @@ def v3_bounds(pool, sqrtP, block):
     return get_sqrt_ratio_at_tick(lo_t), get_sqrt_ratio_at_tick(hi_t)
 
 
-_ADDR_CACHE = {}     # frozenset(pair) -> (kind, addr, t0, t1) | None
+_ADDR_CACHE = {}     # frozenset(pair) -> [(kind, addr, t0, t1), ...]
                      # addresses are stable; STATE is always read fresh
 
 
-def discover_pair_addr(t0, t1):
-    """Factory lookup (cached): the deepest canonical pool for the pair.
-    V3 preferred over V2 (deeper markets); within V3 the max-liquidity
-    fee tier across both factories."""
+def discover_pair_addrs(t0, t1):
+    """ALL canonical candidates for the pair (cached): V3 across both
+    factories and all four tiers (existence-filtered by L>0 at latest),
+    plus the V2 pair. The block-state probe picks the winner -- latest-L
+    ranking alone misselects (a deep tier at latest may be the wrong
+    venue for this order at this block)."""
     key = frozenset((t0, t1))
     if key in _ADDR_CACHE:
         return _ADDR_CACHE[key]
-    result = None
-    # V3 across factories and tiers: pick by liquidity at LATEST (a
-    # cheap ranking heuristic; state is re-read at the block anyway)
-    best = None
+    cands = []
     for fac in V3_FACTORIES:
         for fee in V3_FEES:
             try:
@@ -129,23 +128,20 @@ def discover_pair_addr(t0, t1):
                 if p3 == ZERO_ADDR:
                     continue
                 L = int(call_at("latest", p3, "0x1a686502"), 16)
-                if L > 0 and (best is None or L > best[0]):
-                    best = (L, p3)
+                if L > 0:
+                    cands.append(("v3", p3, t0, t1))
             except RuntimeError:
                 continue
-    if best:
-        result = ("v3", best[1], t0, t1)
-    else:
-        try:
-            r = call_at("latest", V2_FACTORY,
-                        "0xe6a43905" + _pad(t0) + _pad(t1))
-            pair = "0x" + r[2:][-40:]
-            if pair != ZERO_ADDR:
-                result = ("v2", pair, t0, t1)
-        except RuntimeError:
-            pass
-    _ADDR_CACHE[key] = result
-    return result
+    try:
+        r = call_at("latest", V2_FACTORY,
+                    "0xe6a43905" + _pad(t0) + _pad(t1))
+        pair = "0x" + r[2:][-40:]
+        if pair != ZERO_ADDR:
+            cands.append(("v2", pair, t0, t1))
+    except RuntimeError:
+        pass
+    _ADDR_CACHE[key] = cands
+    return cands
 
 
 def fetch_pool_state(found, block):
@@ -171,17 +167,71 @@ def fetch_pool_state(found, block):
         return None
 
 
+def _depth_at_block(found, block):
+    """Cheap depth read (1 call) for candidate ranking: V3 -> liquidity,
+    V2 -> reserve product. Units differ across kinds, so ranking is
+    within-kind only."""
+    kind, addr, _t0, _t1 = found
+    try:
+        if kind == "v2":
+            res = call_at(block, addr, "0x0902f1ac")[2:]
+            r0, r1 = int(res[0:64], 16), int(res[64:128], 16)
+            return r0 * r1 if r0 > 0 and r1 > 0 else 0
+        return int(call_at(block, addr, "0x1a686502"), 16)
+    except RuntimeError:
+        return 0
+
+
+def _best_candidate(cands, block, probe_tok, probe_amt):
+    """Two-phase venue selection: cheap depth reads rank candidates
+    within each kind, then the top of each kind is fully built and
+    probe-quoted -- selection by execution, at bounded rpc cost."""
+    if not cands:
+        return None
+    depths = [(c, _depth_at_block(c, block)) for c in cands]
+    v3 = [c for c, d in depths if c[0] == "v3" and d > 0]
+    v2 = [c for c, d in depths if c[0] == "v2" and d > 0]
+    v3.sort(key=lambda c: -dict((id(cc), dd) for cc, dd in depths)[id(c)])
+    v2.sort(key=lambda c: -dict((id(cc), dd) for cc, dd in depths)[id(c)])
+    finalists = v3[:2] + v2[:1]
+    if not finalists:
+        return None
+    best_q, best_p = None, None
+    for found in finalists:
+        p = fetch_pool_state(found, block)
+        if p is None:
+            continue
+        if probe_tok is None or probe_amt <= 0:
+            if best_p is None:
+                best_p = p
+            continue
+        try:
+            q = p.quote(probe_tok, probe_amt)
+        except Exception:                              # noqa: BLE001
+            continue
+        if q > 0 and (best_q is None or q > best_q):
+            best_q, best_p = q, p
+    return best_p
+
+
 def discover_pools(orders, block):
-    """Direct pairs first; hub pairs lazily, only for orders whose
-    direct pair has no pool (keeps the rpc budget bounded)."""
+    """Direct pairs first (probe = the pair's largest order); hub pairs
+    lazily, only for orders whose direct pair has no pool."""
     pools = {}
     uncovered = []
+    probe_by_pair = {}
+    for o in orders:
+        key = frozenset((o.sell_tok, o.buy_tok))
+        cur = probe_by_pair.get(key)
+        if cur is None or o.sell_amt > cur[1]:
+            probe_by_pair[key] = (o.sell_tok, o.sell_amt)
     for o in orders:
         key = frozenset((o.sell_tok, o.buy_tok))
         if key in pools:
             continue
-        found = discover_pair_addr(*sorted(key))
-        p = fetch_pool_state(found, block)
+        cands = discover_pair_addrs(*sorted(key))
+        ptok, pamt = probe_by_pair[key]
+        p = _best_candidate(cands, block, ptok, pamt)
         if p is not None:
             pools[key] = p
         else:
@@ -190,12 +240,13 @@ def discover_pools(orders, block):
         for h in HUBS:
             if h == o.sell_tok or h == o.buy_tok:
                 continue
-            for (a, b) in ((o.sell_tok, h), (h, o.buy_tok)):
+            for (a, b, probe) in ((o.sell_tok, h, (o.sell_tok, o.sell_amt)),
+                                  (h, o.buy_tok, (h, 0))):
                 key = frozenset((a, b))
                 if key in pools:
                     continue
-                found = discover_pair_addr(*sorted(key))
-                p = fetch_pool_state(found, block)
+                cands = discover_pair_addrs(*sorted(key))
+                p = _best_candidate(cands, block, *probe)
                 if p is not None:
                     pools[key] = p
     return pools
