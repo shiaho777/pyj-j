@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-scan.py -- the differential scanner (C-line weapon), multi-chain.
+scan.py -- the differential scanner (C-line weapon), archive edition.
 
 Our exact integer math vs chain execution, at scale, on the interesting
-population: transactions that swap the SAME V3 pool at least twice
-(arbitrage / solver / rebalancing traffic -- exactly the MEV-shaped flow
-a bug would hide in). Leads do not grow on canonical Uniswap V3 (five
-years of bounty pressure); they grow on forks -- so the scanner is
-factory-aware and runs on the fork-heavy chains too.
+population: ANY two consecutive swaps on a pool (same tx or CROSS-BLOCK
+-- arbitrage, rebalancing, MEV-shaped flow; exactly where a bug hides).
 
-Why same-tx consecutive pairs: the previous swap event's final state IS
-the next swap's true before-state -- no eth_call drift, and the receipt
-proves no other pool event (mint/burn) happened in between. Each pair is
-replayed bit-for-bit under BOTH swap semantics:
+The native archive (solver/store.py, sqlite) is the paywall-breaker:
+free providers gate history behind archive fees, so we capture
+continuously into our own store and replay from it. The OR-topic
+getLogs (Swap | Mint | Burn) puts state-changing events in the same
+stream, which means mint/burn-between detection needs NO receipts --
+the receipt-aging failure mode is gone entirely.
 
+Replay semantics (both, bit-exact):
   exactInput   price from the input (net of fee), output derived
   exactOutput  price from the OUTPUT amount (getNextSqrtPriceFromOutput,
                the add=false branches), fee = ceil(in*f/(1e6-f)) on the
@@ -25,17 +25,17 @@ extracted by binary search when the direct replay misses):
   MATCH      exactInput swap, price+output bit-exact
   MATCH-OUT  exactOutput swap, price+gross bit-exact
   CROSS      liquidity changed during the swap (tick boundary crossed)
-  FEE-DIFF   some fee explains the event but not the pool's fee()
+  FEE-DIFF   some fee explains the event but not the pool's recorded
+             fee -- for dynamic-fee pools this is a FEE ORACLE: the
+             interval width is the measurement precision
   LEAD       no fee explains the event: our math and the chain disagree
              structurally. INVESTIGATE. (Suspect #1 is always our own
              math -- that is how the exactOutput gap was found.)
 
-RPC reality (honest infrastructure notes):
-  - publicnode bans topic-only eth_getLogs but serves reads
-  - drpc allows topic-only getLogs but only for the last ~128 blocks and
-    rate-limits hard
-  => drpc for logs (small chunks, paced), publicnode for everything else.
-  Results append to solver/scanlog/<chain>.jsonl so runs accumulate.
+On LEAD classification the pool's tick structure is captured AT BLOCK
+TIME (bitmap + ticks + slot0) -- crossed positions get burned, and
+historical ticks sit behind the archive paywall. Arriving fresh IS
+the native archive.
 """
 import datetime
 import json
@@ -46,6 +46,8 @@ import urllib.request
 
 sys.path.insert(0, ".")
 from solver.l4 import V3_TOPIC, parse_v3_swap            # noqa: E402
+from solver.store import (EventStore, MINT_TOPIC,         # noqa: E402
+                          BURN_TOPIC)
 from solver.tickwalk import capture_tick_context          # noqa: E402
 from solver.v3math import (                               # noqa: E402
     get_amount0_delta, get_amount1_delta,
@@ -54,19 +56,12 @@ from solver.v3math import (                               # noqa: E402
 
 FEE_ONE = 1_000_000
 Q96 = 2 ** 96
-LOGDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanlog")
+HERE = os.path.dirname(os.path.abspath(__file__))
+STORE_PATH = os.path.join(HERE, "scanstore.db")
+LOGDIR = os.path.join(HERE, "scanlog")
 
-# Events that do NOT change swap state (Collect/Flash/gauge fee pulls;
-# verified against Slipstream + v3-core sources). Mint/Burn change active
-# liquidity -> pairs across them stay invalid. Unknown topics stay invalid.
-NEUTRAL_TOPICS = {
-    "0xa89c1c8a741251492622c95237828c75d1dbb03ea956f09e3792ff2a14f4fe62",  # Collect
-    "0xbdbdb71d7860376ba52b25a5028beea23581364a40522f6bcfb86bb1f2dca633",  # Flash
-    "0xec8208dd791fa8ffdc0d7427f3ba9c0ed06f1bce9a86254e6940c10cc1802fef",  # CollectFees
-}
-
-# Uniswap V3 and Pancake V3 factories are deployed at the same address on
-# every chain (deterministic deployment); anything else is worth a look.
+# Uniswap V3 / Pancake V3 factories deploy at the same address on every
+# chain; anything else is worth a look.
 FACTORIES = {
     "0x1f98431c8ad98523631ae4a59f267346ea31f984": "uniswap-v3",
     "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865": "pancake-v3",
@@ -76,27 +71,25 @@ FACTORIES = {
     "0x0fd83557b2be93617c9c1c1b6fd549401c74558c": "alienbase-v3",
 }
 
+# drpc: topic-only getLogs but only the last ~128 blocks, throttled.
+# Official L2 endpoints: NO topic wall, deep history, 2000-block range
+# cap and a result-size cap per call (adaptive halving handles both).
 CHAINS = {
-    # NOTE: windows are capped near the providers' receipt horizon
-    # (~128 blocks on fast chains) -- on BSC/Base a bigger window ages
-    # out of publicnode's receipt serving before the scan reaches it.
     "eth":  dict(logs="https://eth.drpc.org",
                  read="https://ethereum-rpc.publicnode.com",
-                 blocks=120, chunk=50, pace=3.5),
+                 blocks=120, chunk=50, pace=3.5, max_backfill=120),
     "bsc":  dict(logs="https://bsc.drpc.org",
                  read="https://bsc-rpc.publicnode.com",
-                 blocks=100, chunk=15, pace=6.0),
-    # base/arb: the OFFICIAL L2 endpoints allow topic-only getLogs (no
-    # publicnode-style wall) and serve receipts -- single-provider, no
-    # drpc throttling, no cross-provider aging. bsc stays on drpc (mapped,
-    # structurally thin on free tiers).
+                 blocks=100, chunk=15, pace=6.0, max_backfill=100),
     "base": dict(logs="https://mainnet.base.org",
                  read="https://mainnet.base.org",
-                 blocks=100, chunk=100, pace=1.0),
+                 blocks=100, chunk=50, pace=0.8, max_backfill=12000),
     "arb":  dict(logs="https://arb1.arbitrum.io/rpc",
                  read="https://arb1.arbitrum.io/rpc",
-                 blocks=400, chunk=100, pace=1.0),
+                 blocks=400, chunk=100, pace=0.8, max_backfill=30000),
 }
+
+TOPICS3 = [V3_TOPIC, MINT_TOPIC, BURN_TOPIC]
 
 
 # ------------------------------------------------------------------ rpc
@@ -177,18 +170,15 @@ def net_interval(sqrtP, L, gross, target, zero_for_one):
     if zero_for_one:
         def s(n):
             return get_next_sqrt_price_from_amount0_rounding_up(sqrtP, L, n)
-        # s non-increasing: >= target on a prefix, <= target on a suffix
         n_hi = _last(0, gross, lambda n: s(n) >= target)
         n_lo = _first(0, gross, lambda n: s(n) <= target)
     else:
         def s(n):
             return get_next_sqrt_price_from_amount1_rounding_down(sqrtP, L, n)
-        # s non-decreasing
         n_lo = _first(0, gross, lambda n: s(n) >= target)
         n_hi = _last(0, gross, lambda n: s(n) <= target)
     if not (0 <= n_lo <= n_hi <= gross):
         return None
-    # monotonicity makes s == target throughout; verify endpoints anyway
     if s(n_lo) != target or s(n_hi) != target:
         return None
     return n_lo, n_hi
@@ -196,8 +186,7 @@ def net_interval(sqrtP, L, gross, target, zero_for_one):
 
 def fee_interval(gross, n_lo, n_hi):
     """Fee values [f_lo, f_hi] (hundredths of a bip) whose net lands in
-    [n_lo, n_hi]. net(f) = gross - ceil(gross*f/1e6), non-increasing.
-    None if no fee in [0, 1e6] works (e.g. implied net > gross)."""
+    [n_lo, n_hi]. net(f) = gross - ceil(gross*f/1e6), non-increasing."""
     def net(f):
         return gross - (gross * f + FEE_ONE - 1) // FEE_ONE
 
@@ -250,8 +239,6 @@ def classify_pair(ev1, ev2, fee):
     # pass 2: exactOutput -- the price is derived FROM the output amount
     # (SqrtPriceMath.getNextSqrtPriceFromOutput, the add=false branches),
     # and the fee is taken on the DERIVED input as ceil(in*f/(1e6-f)).
-    # Discovered by this scanner: 6/6 "unexplainable" leads were exactly
-    # this case, bit-for-bit.
     if zf1:
         quo = ceil_div(out_chain << 96, L)
         if 0 < quo < sqrtP:
@@ -271,10 +258,8 @@ def classify_pair(ev1, ev2, fee):
         if s_out == target and amt_in + fee_amt == gross:
             return dict(cls="MATCH-OUT")
 
-    # pass 2b: non-circular exactOutput check -- the circular form above
-    # derives the price from the event's OUTPUT, which is the post-rounding
-    # delta, not the desired amount the chain priced from. Here both legs
-    # are derived from the event's FINAL PRICE and must settle exactly.
+    # pass 2b: non-circular exactOutput check -- both legs derived from
+    # the event's FINAL PRICE, settling exactly
     if zf1:
         in_pred = get_amount0_delta(sqrtP, target, L, True)
         out_pred = get_amount1_delta(sqrtP, target, L, False)
@@ -284,6 +269,19 @@ def classify_pair(ev1, ev2, fee):
     fee_pred = muldiv_ru(in_pred, fee, FEE_ONE - fee)
     if out_pred == out_chain and in_pred + fee_pred == gross:
         return dict(cls="MATCH-OUT")
+
+    # pass 2c: price-capped swaps (sqrtPriceLimitX96 set by the router)
+    # -- the walk STOPS AT the limit, so the final price is assigned, not
+    # derived: it is not in the input formula's image by construction.
+    # Amounts settle as exact deltas and the fee is implied from them.
+    # Discovered via a DCA drip bot on Base: 58 LEADs resolved at once.
+    if out_pred == out_chain and 0 < in_pred < gross:
+        fee_amt = gross - in_pred
+        for f in (fee_amt * FEE_ONE // gross,
+                  fee_amt * FEE_ONE // gross + 1):
+            if 0 < f < FEE_ONE and \
+                    in_pred + muldiv_ru(in_pred, f, FEE_ONE - f) == gross:
+                return dict(cls="MATCH-LIMIT", f=(f, f), **base)
 
     ni = net_interval(sqrtP, L, gross, target, zf1)
     if ni is None:
@@ -295,7 +293,6 @@ def classify_pair(ev1, ev2, fee):
         return dict(cls="LEAD",
                     why="implied net exceeds gross input (negative fee?)",
                     **base)
-    # price reachable: the output is then fully determined by the price
     out_at_target = (get_amount1_delta if zf1 else get_amount0_delta)(
         sqrtP, target, L, False)
     if out_at_target != out_chain:
@@ -306,51 +303,66 @@ def classify_pair(ev1, ev2, fee):
         return dict(cls="LEAD", why="no fee in [0,1e6] fits the net", **base)
     f_lo, f_hi = fi
     if f_lo <= fee <= f_hi:
-        # would imply the primary replay matched -- internal inconsistency
         return dict(cls="INTERNAL-BUG",
-                    why="fee() inside implied interval but replay differed",
+                    why="fee inside implied interval but replay differed",
                     f=(f_lo, f_hi), **base)
     return dict(cls="FEE-DIFF", f=(f_lo, f_hi), **base)
 
 
 # -------------------------------------------------------------- scanning
-def scan(chain, n_blocks=None, chunk=None):
+def scan(chain, n_blocks=None):
     cfg = CHAINS[chain]
     if n_blocks is None:
         n_blocks = cfg["blocks"]
-    if chunk is None:
-        chunk = cfg["chunk"]
+    store = EventStore(STORE_PATH)
+    call = lambda m, p: rpc_retry(cfg["read"], m, p)   # noqa: E731
+
     head = int(rpc_retry(cfg["read"], "eth_blockNumber", []), 16)
-    logs = []
-    groups = {}
-    receipts = {}
+    last = store.head(chain)
+    # backfill from the archive cursor; on first run, a fresh window.
+    # Beyond max_backfill we accept a gap (the first event after it
+    # only loses pair-start eligibility, never correctness).
+    start = (last + 1) if last is not None else head - n_blocks
+    if head - start > cfg["max_backfill"]:
+        start = head - cfg["max_backfill"]
+        print(f"[{chain}] gap accepted: backfill capped at "
+              f"{cfg['max_backfill']} blocks")
 
-    def receipt(tx):
-        if tx not in receipts:
-            try:
-                rc = rpc_retry(cfg["read"], "eth_getTransactionReceipt", [tx])
-                if int(rc.get("status", "0x0"), 16) != 1:
-                    receipts[tx] = None
-                else:
-                    receipts[tx] = rc.get("logs", [])
-            except RuntimeError:
-                # receipt aged out of the provider's horizon -> the tx
-                # can never be verified; drop it (counted as stale)
-                receipts[tx] = "stale"
-        return receipts[tx]
-
-    b = head - n_blocks
-    while b < head:
-        step = chunk
+    known = store.known_pools(chain)
+    b = start
+    while b <= head:
+        step = cfg["chunk"]
         rate_hits = 0
         while True:
-            to = min(b + step, head) - 1
+            to = min(b + step, head)
             try:
                 time.sleep(cfg["pace"])
                 part = rpc_post(cfg["logs"], "eth_getLogs", [
                     {"fromBlock": hex(b), "toBlock": hex(to),
-                     "topics": [V3_TOPIC]}])
-                logs.extend(part)
+                     "topics": [TOPICS3]}])
+                rows = []
+                for l in part:
+                    pool = l["address"].lower()
+                    t0 = l["topics"][0] if l.get("topics") else ""
+                    block = int(l["blockNumber"], 16)
+                    if t0 == V3_TOPIC:
+                        ev = parse_v3_swap(l)
+                        if not ev:
+                            continue
+                        rows.append((chain, block, int(l["logIndex"], 16),
+                                     l["transactionHash"], pool, "swap",
+                                     str(ev["amount0"]), str(ev["amount1"]),
+                                     str(ev["sqrtP"]), str(ev["L"]),
+                                     str(ev["tick"])))
+                    elif t0 in (MINT_TOPIC, BURN_TOPIC):
+                        rows.append((chain, block, int(l["logIndex"], 16),
+                                     l["transactionHash"], pool,
+                                     "mint" if t0 == MINT_TOPIC else "burn",
+                                     None, None, None, None, None))
+                    else:
+                        continue
+                store.insert_events(chain, rows)
+                store.set_head(chain, to)
                 b = to + 1
                 break
             except RuntimeError as ex:
@@ -359,136 +371,69 @@ def scan(chain, n_blocks=None, chunk=None):
                              or "http 5" in s or "internal error" in s
                              or s.startswith("net ") or "timed out" in s)
                 if transient:
-                    # never give up to soft bans: long exponential backoff
                     rate_hits += 1
                     wait = min(90, 15 + 10 * rate_hits)
                     print(f"  .. throttled (hit {rate_hits}): "
                           f"{s[:60]} -- sleeping {wait}s", flush=True)
                     time.sleep(wait)
                     continue
-                # "can't route" = range/size too large for the provider
+                # range/size too large for the provider: halve
                 if step > 10:
                     step //= 2
                     time.sleep(3)
                     continue
                 raise
-        # fetch receipts for this chunk's multi-swap txs NOW, while they
-        # are still inside the provider's receipt horizon
-        chunk_groups = {}
-        for l in part:
-            ev = parse_v3_swap(l)
-            if not ev:
-                continue
-            ev["tx"] = l["transactionHash"]
-            ev["logIndex"] = int(l["logIndex"], 16)
-            ev["block"] = int(l["blockNumber"], 16)
-            key = (l["transactionHash"], ev["pool"])
-            groups.setdefault(key, []).append(ev)
-            chunk_groups[key] = groups[key]
-        for key, evs in chunk_groups.items():
-            if len(evs) >= 2:
-                receipt(key[0])
-        print(f"  .. {len(logs)} logs through block {to}", flush=True)
+        print(f"  .. stored through block {to}", flush=True)
 
-    for v in groups.values():
-        v.sort(key=lambda e: e["logIndex"])
-    cand = {k: v for k, v in groups.items() if len(v) >= 2}
-    print(f"[{chain}] blocks [{head - n_blocks}, {head}): {len(logs)} V3 "
-          f"swap events, {len(groups)} (tx,pool) groups, "
-          f"{len(cand)} multi-swap groups")
+    st = store.stats(chain)
+    print(f"[{chain}] archive: {st['events']:,} events, {st['pools']} pools"
+          f" (through block {head})")
 
-    fees = {}
-    factories = {}
-
-    def pool_fee(pool, block):
-        # read fee() at the EVENT's block: dynamic-fee pools (e.g.
-        # Slipstream) change fees over time; latest would drift.
-        # If the block aged out of the read horizon, fall back to latest
-        # -- the implied-fee machinery reports any drift honestly.
-        key = (pool, block)
-        if key not in fees:
-            try:
-                fees[key] = int(rpc_retry(cfg["read"], "eth_call", [
-                    {"to": pool, "data": "0xddca3f43"}, hex(block)]), 16)
-            except RuntimeError:
-                try:
-                    fees[key] = int(rpc_retry(cfg["read"], "eth_call", [
-                        {"to": pool, "data": "0xddca3f43"}, "latest"]), 16)
-                except RuntimeError:
-                    fees[key] = None
-        return fees[key]
-
-    def pool_factory(pool):
-        if pool not in factories:
-            try:
-                r = rpc_retry(cfg["read"], "eth_call", [
-                    {"to": pool, "data": "0xc45a0155"}, "latest"])
-                factories[pool] = "0x" + r[2:][24:]
-            except RuntimeError:
-                factories[pool] = None
-        return factories[pool]
-
+    # pairs form over the FULL archive (ev1 can be arbitrarily old);
+    # the run reports only pairs whose second element is new
+    all_pairs = store.pairs(chain)
+    pairs = [(a, b) for a, b in all_pairs if b["block"] >= start]
     results = []
-    n_pairs_dropped = 0      # non-neutral pool event between the swaps
-    n_pairs_stale = 0        # receipt aged out of the provider horizon
-    for (tx, pool), evs in sorted(cand.items()):
-        rc_logs = receipt(tx)
-        if rc_logs is None or rc_logs == "stale":
-            n_pairs_stale += len(evs) - 1
-            continue
-        fee = pool_fee(pool, evs[0]["block"])
-        factory = pool_factory(pool)
+    for ev1, ev2 in pairs:
+        pool = ev2["pool"]
+        if pool not in known:
+            # lazy meta capture: most pools in the stream never produce
+            # a replayable pair, so we only pay 4 rpc calls for the ones
+            # that do (first run); later runs capture only brand-new pools
+            store.note_pool(chain, pool, ev2["block"], call)
+            known.add(pool)
+        fee = store.pool_fee(chain, pool)
+        factory = store.pool_factory(chain, pool)
         ftag = FACTORIES.get(factory, factory or "?")
-        for ev1, ev2 in zip(evs, evs[1:]):
-            li1, li2 = ev1["logIndex"], ev2["logIndex"]
-            clean = True
-            for l in rc_logs:
-                if (l["address"].lower() == pool
-                        and li1 < int(l["logIndex"], 16) < li2
-                        and l.get("topics")
-                        and l["topics"][0] not in NEUTRAL_TOPICS
-                        and l["topics"][0] != V3_TOPIC):
-                    clean = False
-                    break
-            if not clean:
-                n_pairs_dropped += 1
-                continue
-            if fee is None:
-                results.append(dict(tx=tx, pool=pool, cls="EXOTIC",
-                                    factory=ftag))
-                continue
-            r = classify_pair(ev1, ev2, fee)
-            r.update(tx=tx, pool=pool, factory=ftag)
-            if r["cls"] in ("LEAD", "INTERNAL-BUG"):
-                # capture the tick structure NOW, at block time: crossed
-                # positions get burned (the first LEAD's position was),
-                # and historical ticks sit behind the archive paywall.
-                # Arriving fresh IS the native archive.
-                r["tick_context"] = capture_tick_context(
-                    pool, ev1["sqrtP"], ev2["sqrtP"],
-                    lambda m, p: rpc_retry(cfg["read"], m, p))
-                nt = len(r["tick_context"].get("ticks", {}))
-                print(f"  [lead] tick context captured for {pool[:14]}…: "
-                      f"{nt} initialized ticks in range", flush=True)
-            results.append(r)
-    return results, n_pairs_dropped, n_pairs_stale, head, n_blocks, len(logs)
+        if fee is None:
+            results.append(dict(tx=ev2["tx"], pool=pool, cls="EXOTIC",
+                                factory=ftag))
+            continue
+        r = classify_pair(ev1, ev2, fee)
+        r.update(tx=ev2["tx"], pool=pool, factory=ftag)
+        if r["cls"] in ("LEAD", "INTERNAL-BUG"):
+            r["tick_context"] = capture_tick_context(
+                pool, ev1["sqrtP"], ev2["sqrtP"], call)
+            nt = len(r["tick_context"].get("ticks", {}))
+            print(f"  [lead] tick context captured for {pool[:14]}…: "
+                  f"{nt} initialized ticks in range", flush=True)
+        results.append(r)
+    return results, head, st
 
 
-def report(chain, results, n_dropped, n_stale=0):
-    order = ["MATCH", "MATCH-OUT", "CROSS", "FEE-DIFF", "LEAD",
-             "INTERNAL-BUG", "EXOTIC", "DUST"]
+def report(chain, results, store_stats):
+    order = ["MATCH", "MATCH-OUT", "MATCH-LIMIT", "CROSS", "FEE-DIFF",
+             "LEAD", "INTERNAL-BUG", "EXOTIC", "DUST"]
     counts = {k: 0 for k in order}
     for r in results:
         counts[r["cls"]] += 1
     n = len(results)
     print("=" * 78)
     print(f"  DIFFERENTIAL SCAN [{chain}] -- our integer math vs chain")
+    print(f"  archive: {store_stats['events']:,} events, "
+          f"{store_stats['pools']} pools")
     print("=" * 78)
-    print(f"  replayable pairs: {n}"
-          + (f"  (dropped {n_dropped}: non-neutral pool event between swaps)"
-             if n_dropped else "")
-          + (f"  (stale {n_stale}: receipt aged out of horizon)"
-             if n_stale else ""))
+    print(f"  replayable pairs this run: {n}")
     for k in order:
         if counts[k]:
             print(f"  {k:14} {counts[k]:>6}   "
@@ -503,26 +448,27 @@ def report(chain, results, n_dropped, n_stale=0):
         for r in rs:
             cnt[r["cls"]] = cnt.get(r["cls"], 0) + 1
         parts = "  ".join(f"{k}:{v}" for k, v in sorted(cnt.items()))
-        print(f"  {fac:14} {len(rs):>3} pairs  {parts}")
+        print(f"  {fac[:20]:20} {len(rs):>5} pairs  {parts}")
 
     by_pool = {}
     for r in results:
         by_pool.setdefault(r["pool"], []).append(r)
-    print(f"\n  per pool ({len(by_pool)}):")
-    for pool, rs in sorted(by_pool.items(), key=lambda kv: -len(kv[1])):
+    top = sorted(by_pool.items(), key=lambda kv: -len(kv[1]))[:15]
+    print(f"\n  per pool (top {len(top)} of {len(by_pool)}):")
+    for pool, rs in top:
         cnt = {}
         for r in rs:
             cnt[r["cls"]] = cnt.get(r["cls"], 0) + 1
         parts = "  ".join(f"{k}:{v}" for k, v in sorted(cnt.items()))
         print(f"  {pool[:16]}… [{rs[0].get('factory', '?')}]  "
-              f"{len(rs):>3} pairs  {parts}")
+              f"{len(rs):>4} pairs  {parts}")
 
     fee_diffs = [r for r in results if r["cls"] == "FEE-DIFF"]
     if fee_diffs:
         print(f"\n  FEE-DIFF implied intervals (hundredths of a bip):")
         for r in fee_diffs[:12]:
             print(f"    pool={r['pool'][:14]}… implied {r['f'][0]}..{r['f'][1]}"
-                  f"  fee()={r['fee']}  tx={r['tx'][:16]}…")
+                  f"  recorded fee={r['fee']}  tx={r['tx'][:16]}…")
     leads = [r for r in results if r["cls"] in ("LEAD", "INTERNAL-BUG")]
     if leads:
         print(f"\n  LEADS ({len(leads)}) -- INVESTIGATE:")
@@ -536,17 +482,17 @@ def report(chain, results, n_dropped, n_stale=0):
             if "net_interval" in r:
                 print(f"      net interval {r['net_interval']}")
     else:
-        print("\n  no leads in this window")
+        print("\n  no leads in this run")
     print("=" * 78)
     return counts
 
 
-def log_result(chain, head, n_blocks, n_events, results, counts):
+def log_result(chain, head, store_stats, results, counts):
     """Append the run to solver/scanlog/<chain>.jsonl -- evidence
     accumulates across runs instead of evaporating."""
     os.makedirs(LOGDIR, exist_ok=True)
     rec = dict(ts=datetime.datetime.utcnow().isoformat() + "Z",
-               chain=chain, head=head, blocks=n_blocks, events=n_events,
+               chain=chain, head=head, archive=store_stats,
                pairs=len(results), counts=counts,
                leads=[{k: r[k] for k in ("tx", "pool", "factory", "cls",
                                          "why", "sqrtP", "L", "gross",
@@ -554,7 +500,8 @@ def log_result(chain, head, n_blocks, n_events, results, counts):
                                          "fee", "f", "tick_context")
                       if k in r}
                       for r in results if r["cls"] in ("LEAD", "INTERNAL-BUG",
-                                                       "FEE-DIFF")])
+                                                       "FEE-DIFF",
+                                                       "MATCH-LIMIT")])
     with open(os.path.join(LOGDIR, f"{chain}.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -569,12 +516,11 @@ def main():
             n_blocks = None
             if i + 1 < len(args) and args[i + 1].isdigit():
                 n_blocks = int(args[i + 1])
-            results, n_dropped, n_stale, head, nb, n_events = scan(
-                chain, n_blocks)
-            counts = report(chain, results, n_dropped, n_stale)
-            log_result(chain, head, nb, n_events, results, counts)
+            results, head, st = scan(chain, n_blocks)
+            counts = report(chain, results, st)
+            log_result(chain, head, st, results, counts)
             if i + 1 < len(args):
-                time.sleep(20)          # inter-chain cooldown
+                time.sleep(5)               # inter-chain cooldown
 
 
 if __name__ == "__main__":

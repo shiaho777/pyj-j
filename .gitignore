@@ -17,3 +17,4 @@ __pycache__/
 
 # vendor demo binary (rebuilt by build.sh / vendor Makefile)
 vendor/vendor_demo
+solver/scanstore.db
