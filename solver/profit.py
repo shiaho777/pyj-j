@@ -38,6 +38,7 @@ from solver.scan import rpc_retry, CHAINS                  # noqa: E402
 
 WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+DAI = "0x6b175474e89094c44da98b954edeac495271d0f"
 UNI_USDC_WETH = "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
 Q96 = 2 ** 96
 
@@ -63,17 +64,45 @@ def surplus_in(orders, fills, buys, dec, num):
 
 
 def surplus_in_weth(orders, fills, buys, dec, usdc_per_weth=None):
-    """Surplus in WETH units (NOT wei); falls back to USDC numeraire
-    (converted at the live rate) when the book has no WETH."""
+    """Surplus in WETH units (NOT wei). Numeraire fallback chain
+    WETH -> USDC -> DAI: the clearing prices convert within the book,
+    the live usd rate converts stablecoins to WETH."""
     s, ok = surplus_in(orders, fills, buys, dec, WETH)
     if ok:
         return s / 10 ** 18, "weth"        # clearing-price conversion
                                            # lands in wei; normalize
-    s, ok = surplus_in(orders, fills, buys, dec, USDC)
-    if ok and usdc_per_weth:
-        # s is in USDC-RAW (6 dec): USDC = s/1e6, WETH = USDC/usd_per_weth
-        return s / (usdc_per_weth * 10 ** 6), "usdc"
+    if usdc_per_weth:
+        s, ok = surplus_in(orders, fills, buys, dec, USDC)
+        if ok:
+            # USDC-RAW (6 dec): USDC = s/1e6, WETH = USDC/usd_per_weth
+            return s / (usdc_per_weth * 10 ** 6), "usdc"
+        s, ok = surplus_in(orders, fills, buys, dec, DAI)
+        if ok:
+            # DAI-RAW (18 dec), DAI ~= USD
+            return s / (usdc_per_weth * 10 ** 18), "dai"
     return None, None
+
+
+def notional_weth(orders, fills, dec, num, usdc_per_weth):
+    """Production's executed sell volume in WETH -- the observable
+    pre-bid size feature the whale filter runs on."""
+    tokens = [t.lower() for t in dec["tokens"]]
+    prices = dec["prices"]
+    addr = {"weth": WETH, "usdc": USDC, "dai": DAI}[num]
+    if addr not in tokens:
+        return None
+    ni = tokens.index(addr)
+    total = Fraction(0)
+    for o in orders:
+        f = fills.get(o.oid, 0)
+        if f == 0:
+            continue
+        si = tokens.index(o.sell_tok.lower())
+        total += f * Fraction(prices[si], prices[ni])
+    if num == "weth":
+        return total / 10 ** 18
+    dec_scale = 10 ** 6 if num == "usdc" else 10 ** 18
+    return total / (usdc_per_weth * dec_scale)
 
 
 def gas_weth(txh):
@@ -121,6 +150,8 @@ def main(n_blocks=100):
     net_total = Fraction(0)
     gas_total = Fraction(0)
     gas_entered = Fraction(0)
+    whale_n = 0
+    whale_net = Fraction(0)
     margins = []
     log_rows = []
     for r in rows:
@@ -148,11 +179,16 @@ def main(n_blocks=100):
             gas = 0
         gas_total += gas
         margins.append((r["tx"], margin, gas))
+        notl = notional_weth(r["orders"], r["prod_f"], r["dec"],
+                             num, usdc_rate)
         log_rows.append(dict(tx=r["tx"], numeraire=num,
                              our_weth=float(ours),
                              prod_weth=float(prod),
                              margin_weth=float(margin),
-                             gas_weth=float(gas), n_pools=r["n_pools"],
+                             gas_weth=float(gas),
+                             notional_weth=(float(notl)
+                                            if notl is not None else None),
+                             n_pools=r["n_pools"],
                              n_orders=r["n_orders"]))
         if margin > 0:
             wins += 1
@@ -160,6 +196,9 @@ def main(n_blocks=100):
                 entered += 1
                 net_total += margin - gas
                 gas_entered += gas
+            if margin > 5 * gas:
+                whale_n += 1
+                whale_net += margin - gas
 
     print("=" * 70)
     print("  THE MARGIN MODEL -- bid (production + epsilon), keep the rest")
@@ -168,6 +207,9 @@ def main(n_blocks=100):
           f"({n_usdc} via USDC numeraire; {n_unconv} skipped)")
     print(f"  auctions we would WIN   : {wins}/{n_conv}")
     print(f"  auctions worth ENTERING : {entered}/{n_conv}  (margin > gas)")
+    print(f"  whale filter (m > 5*gas): {whale_n}/{n_conv} enterable, "
+          f"net {float(whale_net):.6f} WETH"
+          + (f" = ${float(whale_net)*usd:,.2f}" if usd else ""))
     if usd:
         print(f"  net margin (entered)    : {float(net_total):.8f} WETH "
               f"= ${float(net_total) * usd:,.4f}")

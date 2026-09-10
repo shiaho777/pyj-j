@@ -94,6 +94,46 @@ def main():
     for m, wr, en in c[::step]:
         bar = "#" * int(wr * 40)
         print(f"    {m:.8f}  {wr*100:5.1f}%  {en:+.8f}  {bar}")
+
+    # ---- the deployable decision rule -------------------------------
+    # pre-bid we KNOW our own extractable but not prod's bid. If the
+    # ratio prod/extractable is tight across auctions, expected margin
+    # ~= extractable * (1 - median_ratio) -- a rule runnable live.
+    ratios = sorted(r["prod_weth"] / r["our_weth"]
+                    for r in rows if r["our_weth"] > 1e-12)
+    if ratios:
+        med = ratios[len(ratios) // 2]
+        q1 = ratios[len(ratios) // 4]
+        q3 = ratios[3 * len(ratios) // 4]
+        print(f"\n  prod/extractable ratio: median {med:.4f} "
+              f"[IQR {q1:.4f}..{q3:.4f}]  n={len(ratios)}")
+        print("  -> live rule: est_margin = extractable * "
+              f"{1-med:.4f}; enter iff est_margin > k*gas")
+
+    # margin vs notional (the whale hypothesis, sliced)
+    withn = [r for r in rows if r.get("notional_weth")]
+    if len(withn) >= 4:
+        withn.sort(key=lambda r: r["notional_weth"])
+        half = len(withn) // 2
+        lo, hi = withn[:half], withn[half:]
+        for name, grp in (("small-notional half", lo),
+                          ("large-notional half", hi)):
+            ms = [r["margin_weth"] for r in grp]
+            pos = sum(1 for m in ms if m > 0)
+            print(f"  {name}: n={len(grp)}  positive {pos}/{len(grp)}  "
+                  f"mean margin {sum(ms)/len(ms):+.6f} WETH  "
+                  f"notional range {grp[0]['notional_weth']:.3f}"
+                  f"..{grp[-1]['notional_weth']:.3f} WETH")
+
+    # whale filter sweep: enter iff margin > k*gas
+    print("\n  whale-filter sweep (enter iff true margin > k*gas):")
+    for k in (1, 3, 5, 10, 20):
+        n_enter = sum(1 for r in rows
+                      if r["margin_weth"] > k * r["gas_weth"])
+        net = sum(r["margin_weth"] - r["gas_weth"] for r in rows
+                  if r["margin_weth"] > k * r["gas_weth"])
+        print(f"    k={k:>2}: enter {n_enter:>3}/{len(rows)}  "
+              f"net {net:+.6f} WETH/auction-set")
     print("=" * 70)
     print("  caveats: sample is tiny (printed above); prod-bid is known")
     print("  only post-hoc -- the live game is blind and competitive;")

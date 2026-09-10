@@ -1,0 +1,39 @@
+# B-line: scheduled money measurement. Each run re-measures our solver
+# against live production settlements (60-block window, ~15 min under
+# free-tier throttling), logs per-auction margins/notional to
+# solver/scanlog/profitlog.jsonl, and bidgame.py turns the accumulated
+# log into the blind-bid strategy curve. Offset from the scan workflow
+# so the two don't share a rate-limit budget.
+name: profit-measure
+on:
+  schedule:
+    - cron: "47 */6 * * *"   # every 6 hours at :47, UTC (scan runs at :17)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: measure margins on live auctions
+        run: python3 solver/profit.py 60
+      - name: bid game on accumulated log
+        run: python3 solver/bidgame.py
+      - name: commit profitlog
+        run: |
+          git config user.name "scan-bot"
+          git config user.email "scan-bot@users.noreply.github.com"
+          git add solver/scanlog/profitlog.jsonl
+          if git diff --cached --quiet; then
+            echo "no new auctions logged"
+          else
+            git commit -m "profit: automated margin window [skip ci]"
+            git push
+          fi
