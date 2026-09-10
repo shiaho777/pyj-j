@@ -281,9 +281,12 @@ def log_measurement(rows, head):
         f.write(json.dumps(rec) + "\n")
 
 
-def main(n_blocks=100):
+def measure(n_blocks=100, quiet=False):
+    """Run the measurement, returning rich per-settlement rows (orders,
+    decoded settlement, both solutions) for downstream money models."""
     txs, head = fetch_settlements(n_blocks)
-    print(f"settlements in last {n_blocks} blocks (head {head}): {len(txs)}")
+    if not quiet:
+        print(f"settlements in last {n_blocks} blocks (head {head}): {len(txs)}")
     rows = []
     n_decode_fail = n_judge_fail = 0
     for txh, block in sorted(txs, key=lambda tb: -tb[1]):
@@ -332,14 +335,24 @@ def main(n_blocks=100):
                          amm=dec["n_inter"] > 0,
                          n_pools=len(pools or {}),
                          prod_sup=prod_sup, our_sup=our_sup,
-                         prod_vol=prod_vol, our_vol=our_vol))
+                         prod_vol=prod_vol, our_vol=our_vol,
+                         orders=orders, dec=dec,
+                         our_f=our_f, our_b=our_b,
+                         prod_f=prod_f, prod_b=prod_b))
       except Exception as e:                          # noqa: BLE001
-        print(f"  [skip] {txh[:16]}… {type(e).__name__}: {str(e)[:70]}")
+        if not quiet:
+            print(f"  [skip] {txh[:16]}… {type(e).__name__}: {str(e)[:70]}")
         n_decode_fail += 1
 
-    print(f"decoded: {len(rows) + n_judge_fail} usable, "
-          f"{n_decode_fail} skipped, {n_judge_fail} judge-failed "
-          f"(decode bug alarm if >0)")
+    if not quiet:
+        print(f"decoded: {len(rows) + n_judge_fail} usable, "
+              f"{n_decode_fail} skipped, {n_judge_fail} judge-failed "
+              f"(decode bug alarm if >0)")
+    return rows, head
+
+
+def main(n_blocks=100):
+    rows, head = measure(n_blocks)
     if not rows:
         return
     peer = [r for r in rows if not r["amm"]]
