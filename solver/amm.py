@@ -49,7 +49,7 @@ class V2Pool:
             self.r_b += x
             self.r_a -= y
         self.ops.append((sell_tok, x, y))
-        return y
+        return y, x
 
     def snapshot(self):
         """Fresh pool with the same initial reserves (for A/B runs)."""
@@ -95,3 +95,64 @@ def max_route(pool, sell_tok, S, B, rem):
         else:
             hi = mid - 1
     return lo
+
+
+# ------------------------------------------------------------------ V3
+from solver.v3math import (                               # noqa: E402
+    Q96, get_amount0_delta, get_amount1_delta,
+    get_next_sqrt_price_from_amount0_rounding_up,
+    get_next_sqrt_price_from_amount1_rounding_down,
+    get_sqrt_ratio_at_tick)
+
+
+class V3Pool:
+    """Uniswap V3 pool as a settlement counterparty: single-range exact
+    math, price walk capped at the nearest initialized tick boundaries
+    (lo_ratio, hi_ratio) -- beyond a boundary the liquidity changes and
+    this v1 does not follow (multi-range walk is future work).
+
+    Same interface as V2Pool: quote/swap; swap returns (out, consumed)
+    because a capped V3 swap consumes LESS than requested.
+    """
+
+    def __init__(self, tok_a, tok_b, sqrtP, L, lo_ratio, hi_ratio):
+        # tok_a/tok_b are the pool's token0/token1 (address order)
+        self.tok_a, self.tok_b = tok_a, tok_b
+        self.init = (sqrtP, L)
+        self.sqrtP, self.L = sqrtP, L
+        self.lo, self.hi = lo_ratio, hi_ratio
+        self.ops = []
+
+    def _next(self, sell_tok, x):
+        """(s_next, out, consumed) for exactInput x, capped at bounds."""
+        if sell_tok == self.tok_a:            # token0 in -> price down
+            s_full = get_next_sqrt_price_from_amount0_rounding_up(
+                self.sqrtP, self.L, x)
+            if s_full < self.lo:
+                s_next = self.lo
+                consumed = get_amount0_delta(s_next, self.sqrtP, self.L, True)
+            else:
+                s_next, consumed = s_full, x
+            out = get_amount1_delta(s_next, self.sqrtP, self.L, False)
+        else:                                  # token1 in -> price up
+            s_full = get_next_sqrt_price_from_amount1_rounding_down(
+                self.sqrtP, self.L, x)
+            if s_full > self.hi:
+                s_next = self.hi
+                consumed = get_amount1_delta(self.sqrtP, s_next, self.L, True)
+            else:
+                s_next, consumed = s_full, x
+            out = get_amount0_delta(self.sqrtP, s_next, self.L, False)
+        return s_next, out, consumed
+
+    def quote(self, sell_tok, x):
+        return self._next(sell_tok, x)[1]
+
+    def swap(self, sell_tok, x):
+        s_next, out, consumed = self._next(sell_tok, x)
+        self.sqrtP = s_next
+        self.ops.append((sell_tok, consumed, out))
+        return out, consumed
+
+    def snapshot(self):
+        return V3Pool(self.tok_a, self.tok_b, *self.init, self.lo, self.hi)

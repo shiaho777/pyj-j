@@ -190,8 +190,8 @@ def solve_exact(orders, pools=None):
                 continue
             x = max_route(pool, o.sell_tok, o.sell_amt, o.buy_min, left)
             if x > 0:
-                y = pool.swap(o.sell_tok, x)
-                fills[o.oid] = fills.get(o.oid, 0) + x
+                y, used = pool.swap(o.sell_tok, x)
+                fills[o.oid] = fills.get(o.oid, 0) + used
                 buys[o.oid] = buys.get(o.oid, 0) + y
     return fills, buys
 
@@ -241,7 +241,7 @@ def solve_float64(orders, pools=None):
             if x <= 0:
                 continue
             y_claim = int(997 * x * r_out / (1000 * r_in + 997 * x))
-            y_true = pool.swap(o.sell_tok, x)     # the chain pays exactly
+            y_true, _used = pool.swap(o.sell_tok, x)  # chain pays exactly
             if y_claim <= 0:
                 continue
             fills[o.oid] = fills.get(o.oid, 0) + x

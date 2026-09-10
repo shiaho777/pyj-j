@@ -75,24 +75,49 @@ def validate_settlement(orders, fills, buys, pools=None):
     ext_in, ext_out = {}, {}
     if pools:
         from solver.v2math import evm_out     # lazy: cow stays standalone
+        from solver.v3math import (get_amount0_delta, get_amount1_delta,
+                                   get_next_sqrt_price_from_amount0_rounding_up,
+                                   get_next_sqrt_price_from_amount1_rounding_down)
         for pool in pools.values():
-            r_a, r_b = pool.init
-            for sell_tok, x, y in pool.ops:
-                if sell_tok == pool.tok_a:
-                    buy_tok = pool.tok_b
-                    y_true = evm_out(x, r_a, r_b)
-                    r_a += x
-                    r_b -= y_true
-                else:
-                    buy_tok = pool.tok_a
-                    y_true = evm_out(x, r_b, r_a)
-                    r_b += x
-                    r_a -= y_true
-                if y_true != y:
-                    return False, (f"pool {pool.tok_a}/{pool.tok_b} op "
-                                   f"x={x}: claimed out {y} != replay {y_true}")
-                ext_in[sell_tok] = ext_in.get(sell_tok, 0) + x
-                ext_out[buy_tok] = ext_out.get(buy_tok, 0) + y
+            if hasattr(pool, "r_a"):          # V2: replay reserves
+                r_a, r_b = pool.init
+                for sell_tok, x, y in pool.ops:
+                    if sell_tok == pool.tok_a:
+                        buy_tok = pool.tok_b
+                        y_true = evm_out(x, r_a, r_b)
+                        r_a += x
+                        r_b -= y_true
+                    else:
+                        buy_tok = pool.tok_a
+                        y_true = evm_out(x, r_b, r_a)
+                        r_b += x
+                        r_a -= y_true
+                    if y_true != y:
+                        return False, (f"pool {pool.tok_a}/{pool.tok_b} op "
+                                       f"x={x}: claimed {y} != replay {y_true}")
+                    ext_in[sell_tok] = ext_in.get(sell_tok, 0) + x
+                    ext_out[buy_tok] = ext_out.get(buy_tok, 0) + y
+            else:                             # V3: replay price walk
+                sp, L = pool.init
+                for sell_tok, x, y in pool.ops:
+                    if sell_tok == pool.tok_a:
+                        buy_tok = pool.tok_b
+                        s_full = get_next_sqrt_price_from_amount0_rounding_up(
+                            sp, L, x)
+                        s_next = s_full if s_full >= pool.lo else pool.lo
+                        y_true = get_amount1_delta(s_next, sp, L, False)
+                    else:
+                        buy_tok = pool.tok_a
+                        s_full = get_next_sqrt_price_from_amount1_rounding_down(
+                            sp, L, x)
+                        s_next = s_full if s_full <= pool.hi else pool.hi
+                        y_true = get_amount0_delta(sp, s_next, L, False)
+                    if y_true != y:
+                        return False, (f"v3 pool {pool.tok_a}/{pool.tok_b} op "
+                                       f"x={x}: claimed {y} != replay {y_true}")
+                    sp = s_next
+                    ext_in[sell_tok] = ext_in.get(sell_tok, 0) + x
+                    ext_out[buy_tok] = ext_out.get(buy_tok, 0) + y
     for tok in set(sold) | set(bought) | set(ext_in) | set(ext_out):
         lhs = sold.get(tok, 0) + ext_out.get(tok, 0)
         rhs = bought.get(tok, 0) + ext_in.get(tok, 0)
