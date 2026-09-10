@@ -20,6 +20,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # the native archive persists across runs -- the whole point of the
+      # paywall-breaker. Without this, every run is a one-shot window and
+      # cross-block pairs (the 35-400x surface multiplication) never form.
+      - name: restore event archive
+        uses: actions/cache@v4
+        with:
+          path: solver/scanstore.db
+          key: scanstore-${{ github.run_id }}
+          restore-keys: |
+            scanstore-
       - name: run differential scanner
         run: python3 solver/scan.py eth base arb
       - name: commit accumulated scanlog
@@ -33,3 +43,14 @@ jobs:
             git commit -m "scan: automated window [skip ci]"
             git push
           fi
+      # caches are immutable: each run saves a fresh snapshot (post-step),
+      # so prune ALL older scanstore entries -- exactly one archive
+      # snapshot (the newest) exists at any time
+      - name: prune stale archive caches
+        run: |
+          for key in $(gh cache list --json key -q '.[].key' 2>/dev/null | grep '^scanstore-' || true); do
+            echo "pruning $key"
+            gh cache delete "$key" || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
