@@ -40,6 +40,10 @@ class V2Pool:
             return evm_out(x, self.r_a, self.r_b)
         return evm_out(x, self.r_b, self.r_a)
 
+    def quote_full(self, sell_tok, x):
+        """(out, consumed) without executing -- V2 always consumes x."""
+        return self.quote(sell_tok, x), x
+
     def swap(self, sell_tok, x):
         y = self.quote(sell_tok, x)
         if sell_tok == self.tok_a:
@@ -147,6 +151,12 @@ class V3Pool:
 
     def quote(self, sell_tok, x):
         return self._next(sell_tok, x)[1]
+
+    def quote_full(self, sell_tok, x):
+        """(out, consumed) without executing -- a capped V3 swap consumes
+        less than requested (the walk stops at the tick boundary)."""
+        _, out, consumed = self._next(sell_tok, x)
+        return out, consumed
 
     def swap(self, sell_tok, x):
         s_next, out, consumed = self._next(sell_tok, x)

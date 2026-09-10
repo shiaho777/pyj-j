@@ -112,6 +112,33 @@ def _routable(orders, fills):
     return rem
 
 
+def _route_two_hop(p1, p2, sell_tok, hub, S, B, rem):
+    """Max x <= rem through p1 (sell->hub) then p2 (hub->buy), requiring
+    leg 2 to ABSORB leg 1's output fully (any hub leftover would break
+    conservation). Returns (x, y1, y2) or None."""
+    def feasible(x):
+        y1, used1 = p1.quote_full(sell_tok, x)
+        if y1 <= 0:
+            return None
+        y2, used2 = p2.quote_full(hub, y1)
+        if used2 != y1:            # leg-2 cap -> hub leftover -> infeasible
+            return None
+        if y2 * S < B * x:         # limit at the requested size
+            return None
+        return y1, y2
+
+    lo, hi, best = 0, rem, None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        r = feasible(mid)
+        if r:
+            best = (mid, r[0], r[1])
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def solve_exact(orders, pools=None):
     """Pass 1: bilateral best-counterpart rings. Pass 2: 3-cycles.
     Pass 3: route remainders through AMM liquidity (EVM-exact)."""
@@ -193,6 +220,37 @@ def solve_exact(orders, pools=None):
                 y, used = pool.swap(o.sell_tok, x)
                 fills[o.oid] = fills.get(o.oid, 0) + used
                 buys[o.oid] = buys.get(o.oid, 0) + y
+
+        # pass 3b: two-hop routes sell -> hub -> buy through any token
+        # with pools to both legs (production routes most long-tail flow
+        # this way; single-hop discovery misses all of it)
+        hub_tokens = set()
+        for key in pools:
+            hub_tokens.update(key)
+        for o in _routable(orders, fills):
+            left = o.sell_amt - fills.get(o.oid, 0)
+            if left <= 0:
+                continue
+            best = None
+            for hub in hub_tokens:
+                if hub == o.sell_tok or hub == o.buy_tok:
+                    continue
+                p1 = pools.get(frozenset((o.sell_tok, hub)))
+                p2 = pools.get(frozenset((hub, o.buy_tok)))
+                if p1 is None or p2 is None:
+                    continue
+                r = _route_two_hop(p1, p2, o.sell_tok, hub,
+                                   o.sell_amt, o.buy_min, left)
+                if r and (best is None or r[0] > best[0][0]):
+                    best = (r, hub, p1, p2)
+            if best:
+                (x, _y1, _y2), hub, p1, p2 = best
+                ya, used1 = p1.swap(o.sell_tok, x)
+                yb, used2 = p2.swap(hub, ya)
+                if used2 != ya:        # should not happen (feasible checked)
+                    continue
+                fills[o.oid] = fills.get(o.oid, 0) + used1
+                buys[o.oid] = buys.get(o.oid, 0) + yb
     return fills, buys
 
 

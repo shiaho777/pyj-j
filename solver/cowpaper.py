@@ -37,8 +37,11 @@ from solver.tickwalk import tick_of                     # noqa: E402
 from solver.tournament import solve_exact               # noqa: E402
 from solver.v3math import get_sqrt_ratio_at_tick        # noqa: E402
 
+SETTLEMENT_TOPIC = ("0x40338ce1a7c49204f0099533b1e9a7ee0a3d261f8497"
+                    "4ab7af36105b8c4e9db4")
 V2_FACTORY = "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f"
 V3_FACTORY = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
+PANCAKE_V3_FACTORY = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865"
 V3_FEES = (100, 500, 3000, 10000)   # all canonical tiers: long-tail
                                     # pairs live at 10000 (1%)
 ZERO_ADDR = "0x" + "0" * 40
@@ -50,8 +53,21 @@ def _pad(addr):
 
 def call_at(block, to, data):
     from solver.scan import rpc_retry, CHAINS
+    tag = block if isinstance(block, str) else hex(block)
     return rpc_retry(CHAINS["eth"]["logs"], "eth_call",
-                     [{"to": to, "data": data}, hex(block)])
+                     [{"to": to, "data": data}, tag])
+
+
+# hubs for two-hop discovery (lazy: only queried for orders whose direct
+# pair has no pool). WETH/USDC/USDT/DAI/WBTC cover most routing paths.
+HUBS = (
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",   # WETH
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",   # USDC
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",   # USDT
+    "0x6b175474e89094c44da98b954edeac495271d0f",   # DAI
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",   # WBTC
+)
+V3_FACTORIES = (V3_FACTORY, PANCAKE_V3_FACTORY)
 
 
 def v3_bounds(pool, sqrtP, block):
@@ -88,60 +104,101 @@ def v3_bounds(pool, sqrtP, block):
     return get_sqrt_ratio_at_tick(lo_t), get_sqrt_ratio_at_tick(hi_t)
 
 
-def discover_pools(orders, block):
-    """Canonical-factory pool discovery for every token pair in the
-    book, with state read AT the settlement block (the same information
-    a real solver has). V2 getPair + V3 getPool(500/3000); the deepest
-    V3 tier wins."""
-    pairs = set()
-    for o in orders:
-        pairs.add((min(o.sell_tok, o.buy_tok), max(o.sell_tok, o.buy_tok)))
-    pools = {}
-    for (t0, t1) in pairs:
-        key = frozenset((t0, t1))
-        # V2
-        try:
-            r = call_at(block, V2_FACTORY,
-                        "0xe6a43905" + _pad(t0) + _pad(t1))
-            pair = "0x" + r[2:][-40:]
-            if pair != ZERO_ADDR:
-                res = call_at(block, pair, "0x0902f1ac")[2:]
-                r0, r1 = int(res[0:64], 16), int(res[64:128], 16)
-                if r0 > 0 and r1 > 0:
-                    pools[key] = V2Pool(t0, t1, r0, r1)
-        except RuntimeError:
-            pass
-        # V3 (deepest liquidity tier wins)
-        best = None
+_ADDR_CACHE = {}     # frozenset(pair) -> (kind, addr, t0, t1) | None
+                     # addresses are stable; STATE is always read fresh
+
+
+def discover_pair_addr(t0, t1):
+    """Factory lookup (cached): the deepest canonical pool for the pair.
+    V3 preferred over V2 (deeper markets); within V3 the max-liquidity
+    fee tier across both factories."""
+    key = frozenset((t0, t1))
+    if key in _ADDR_CACHE:
+        return _ADDR_CACHE[key]
+    result = None
+    # V3 across factories and tiers: pick by liquidity at LATEST (a
+    # cheap ranking heuristic; state is re-read at the block anyway)
+    best = None
+    for fac in V3_FACTORIES:
         for fee in V3_FEES:
             try:
-                r = call_at(block, V3_FACTORY, "0x1698ee82"
+                r = call_at("latest", fac, "0x1698ee82"
                             + _pad(t0) + _pad(t1)
                             + hex(fee)[2:].rjust(64, "0"))
                 p3 = "0x" + r[2:][-40:]
                 if p3 == ZERO_ADDR:
                     continue
-                slot0 = call_at(block, p3, "0x3850c7bd")[2:]
-                sqrtP = int(slot0[0:64], 16)
-                L = int(call_at(block, p3, "0x1a686502"), 16)
-                if L == 0:
-                    continue
-                if best is None or L > best[0]:
-                    best = (L, p3, sqrtP)
+                L = int(call_at("latest", p3, "0x1a686502"), 16)
+                if L > 0 and (best is None or L > best[0]):
+                    best = (L, p3)
             except RuntimeError:
                 continue
-        if best:
-            L, p3, sqrtP = best
-            try:
-                lo, hi = v3_bounds(p3, sqrtP, block)
-                pools[key] = V3Pool(t0, t1, sqrtP, L, lo, hi)
-            except RuntimeError:
-                pass
-        time.sleep(0.05)
-    return pools
+    if best:
+        result = ("v3", best[1], t0, t1)
+    else:
+        try:
+            r = call_at("latest", V2_FACTORY,
+                        "0xe6a43905" + _pad(t0) + _pad(t1))
+            pair = "0x" + r[2:][-40:]
+            if pair != ZERO_ADDR:
+                result = ("v2", pair, t0, t1)
+        except RuntimeError:
+            pass
+    _ADDR_CACHE[key] = result
+    return result
 
-SETTLEMENT_TOPIC = ("0x40338ce1a7c49204f0099533b1e9a7ee0a3d261f8497"
-                    "4ab7af36105b8c4e9db4")
+
+def fetch_pool_state(found, block):
+    """Pool state AT `block` (the settlement's before-state)."""
+    if found is None:
+        return None
+    kind, addr, t0, t1 = found
+    try:
+        if kind == "v2":
+            res = call_at(block, addr, "0x0902f1ac")[2:]
+            r0, r1 = int(res[0:64], 16), int(res[64:128], 16)
+            if r0 <= 0 or r1 <= 0:
+                return None
+            return V2Pool(t0, t1, r0, r1)
+        slot0 = call_at(block, addr, "0x3850c7bd")[2:]
+        sqrtP = int(slot0[0:64], 16)
+        L = int(call_at(block, addr, "0x1a686502"), 16)
+        if L <= 0:
+            return None
+        lo, hi = v3_bounds(addr, sqrtP, block)
+        return V3Pool(t0, t1, sqrtP, L, lo, hi)
+    except RuntimeError:
+        return None
+
+
+def discover_pools(orders, block):
+    """Direct pairs first; hub pairs lazily, only for orders whose
+    direct pair has no pool (keeps the rpc budget bounded)."""
+    pools = {}
+    uncovered = []
+    for o in orders:
+        key = frozenset((o.sell_tok, o.buy_tok))
+        if key in pools:
+            continue
+        found = discover_pair_addr(*sorted(key))
+        p = fetch_pool_state(found, block)
+        if p is not None:
+            pools[key] = p
+        else:
+            uncovered.append(o)
+    for o in uncovered:
+        for h in HUBS:
+            if h == o.sell_tok or h == o.buy_tok:
+                continue
+            for (a, b) in ((o.sell_tok, h), (h, o.buy_tok)):
+                key = frozenset((a, b))
+                if key in pools:
+                    continue
+                found = discover_pair_addr(*sorted(key))
+                p = fetch_pool_state(found, block)
+                if p is not None:
+                    pools[key] = p
+    return pools
 
 
 def fetch_settlements(n_blocks=120):
@@ -199,6 +256,29 @@ def build_orders(dec):
                             dec["tokens"][t["buy_i"]],
                             t["sell_amt"], t["buy_amt"]))
     return orders
+
+
+def log_measurement(rows, head):
+    import datetime, json, os
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanlog")
+    os.makedirs(d, exist_ok=True)
+    rec = dict(ts=datetime.datetime.utcnow().isoformat() + "Z",
+               head=head, settlements=len(rows),
+               wins=sum(1 for r in rows if r["our_sup"] > r["prod_sup"]),
+               full_matches=sum(1 for r in rows
+                                if r["prod_vol"] and
+                                r["our_vol"] * 100 // r["prod_vol"] >= 99),
+               avg_pools=(sum(r["n_pools"] for r in rows) / len(rows)
+                          if rows else 0),
+               rows=[dict(tx=r["tx"], orders=r["n_orders"],
+                          pools=r["n_pools"],
+                          vol_ratio=(r["our_vol"] / r["prod_vol"]
+                                     if r["prod_vol"] else None),
+                          sup_ratio=(float(r["our_sup"] / r["prod_sup"])
+                                     if r["prod_sup"] else None))
+                     for r in rows])
+    with open(os.path.join(d, "cowpaper.jsonl"), "a") as f:
+        f.write(json.dumps(rec) + "\n")
 
 
 def main(n_blocks=100):
@@ -303,6 +383,7 @@ def main(n_blocks=100):
               f"{vr:>9.1f}% {sr:>9.1f}%")
     summarize("peer-comparable (no AMM legs)", peer)
     summarize("AMM-heavy", ammr)
+    log_measurement(rows, head)
     print("\n  NOTE: aggregate surplus sums mix token units across")
     print("  settlements -- per-settlement ratios above are the signal.")
     print("=" * 70)
