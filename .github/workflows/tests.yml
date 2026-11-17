@@ -47,10 +47,19 @@ jobs:
         run: |
           for t in test_pyj.py test_ad.py test_nn.py test_ops2.py \
                    test_train2.py test_compile.py test_ops3.py test_ops4.py \
-                   test_ops5.py test_mlir.py; do
+                   test_ops5.py test_mlir.py test_tally.py; do
             echo "== $t =="
             python3 "$t"
           done
+
+      - name: Tally differential fuzz (fast subset)
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
+          PYJ_LIBPATH: ${{ github.workspace }}/jlibrary/bin
+        run: python3 tally_fuzz.py 40
+
+      - name: Solver verify gate (v3 + tournament + stress)
+        run: make verify
 
       - name: C host end-to-end (train.c)
         env:
@@ -104,10 +113,19 @@ jobs:
         run: |
           for t in test_pyj.py test_ad.py test_nn.py test_ops2.py \
                    test_train2.py test_compile.py test_ops3.py test_ops4.py \
-                   test_ops5.py; do
+                   test_ops5.py test_tally.py; do
             echo "== $t =="
             python3 "$t"
           done
+
+      - name: Tally differential fuzz (fast subset)
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/jlibrary/bin
+          PYJ_LIBPATH: ${{ github.workspace }}/jlibrary/bin
+        run: python3 tally_fuzz.py 40
+
+      - name: Solver verify gate (v3 + tournament + stress)
+        run: make verify
 
       - name: C host end-to-end (train.c)
         env:

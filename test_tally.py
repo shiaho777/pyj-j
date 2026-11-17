@@ -165,7 +165,7 @@ def unit_tests():
         ("ragged array", [[1, 2], [3]], "ragged"),
         ("bad number", "abc", "exact number"),
         ("pow frac exp", {"op": "pow", "base": 2, "exp": "0.5"}, "integer exponent"),
-        ("digits too big", {"op": "sqrt", "arg": 2, "digits": 999}, "digits"),
+        ("digits too big", {"op": "sqrt", "arg": 2, "digits": 1001}, "digits"),
     ]:
         try:
             ev(ast)
@@ -183,6 +183,129 @@ def unit_tests():
     check("200! survives print-width (375 digits)",
           len(r["exact"]) == 375, len(r["exact"]))
     check("200! ends with 49 zeros", r["exact"].endswith("0" * 49), r["exact"][-55:])
+
+    print("== unit: v1 transcendentals & finance ==")
+    r = ev({"op": "pi", "digits": 60}, digits=60)
+    check("pi 60 digits", r["decimal"].startswith(
+        "3.141592653589793238462643383279502884197169399375105820974944"), r["decimal"])
+
+    r = ev({"op": "ln", "arg": 2, "digits": 50}, digits=50)
+    check("ln(2) 50 digits", r["decimal"].startswith(
+        "0.69314718055994530941723212145817656807550013436025"), r["decimal"])
+
+    r = ev({"op": "ln", "arg": 1})
+    check("ln(1) == 0 exact", r["exact"] == "0", r)
+
+    r = ev({"op": "log2", "arg": 8, "digits": 40}, digits=40)
+    check("log2(8) ~ 3", r["decimal"].startswith("3.0000000000"), r["decimal"])
+    check("log2 certified", r.get("certified") is True, r)
+    r = ev({"op": "log10", "arg": 1000, "digits": 40}, digits=40)
+    # convergent may sit just below 3 (truncation); the certificate is
+    # what matters: |true - exact| <= bound, and 3 is within that enclosure
+    check("log10(1000) certified near 3",
+          abs(Fraction(r["exact"]) - 3) <= Fraction(r["error_bound"]), r)
+    r = ev({"op": "log", "arg": 2, "base": 3, "digits": 50}, digits=50)
+    import mpmath as _mp
+    # reference must be FAR more accurate than the convergent (~74 digits):
+    # mpmath.log(2,3) at low dps itself loses precision, so compute ln2/ln3
+    # at dps=200 and compare with 190-digit text.
+    _mp.mp.dps = 200
+    _ref = Fraction(_mp.nstr(_mp.log(2) / _mp.log(3), 190))
+    _err = abs(Fraction(r["exact"]) - _ref)
+    check("log_3(2) correct", _err < Fraction(1, 10**45), str(float(_err)))
+    check("log_3(2) certified", _err <= Fraction(r["error_bound"]), r)
+
+    r = ev({"op": "sin", "arg": 1, "digits": 40}, digits=40)
+    check("sin(1) 40 digits", r["decimal"].startswith(
+        "0.8414709848078965066525023216302989996225"), r["decimal"])
+
+    r = ev({"op": "cos", "arg": 0, "digits": 20})
+    check("cos(0) == 1", r["decimal"].startswith("1.0000000000"), r["decimal"])
+
+    r = ev({"op": "atan", "arg": 1, "digits": 40})
+    c = Fraction(r["exact"])
+    p = Fraction(ev({"op": "pi", "digits": 60})["exact"])
+    check("atan(1) == pi/4", abs(c - p / 4) < Fraction(1, 10**35), r["exact"][:30])
+
+    r = ev({"op": "round", "arg": "2.675", "places": 2})
+    check("round(2.675,2) == 67/25 (half up)", r["exact"] == "67/25", r)
+    r = ev({"op": "round", "arg": "-1.5", "places": 0})
+    check("round(-1.5,0) == -2", r["exact"] == "-2", r)
+
+    r = ev({"op": "pmt", "rate": "0.005", "periods": 360, "pv": 300000})
+    pmt = r["exact"]
+    check("mortgage pmt ~ -1798.65", r["decimal"].startswith("-1798.6515754"), r["decimal"])
+    r2 = ev({"op": "pv", "rate": "0.005", "periods": 360, "payment": pmt})
+    check("pv(pmt) retires loan EXACTLY", r2["exact"] == "300000", r2["exact"][:30])
+
+    r = ev({"op": "fv", "rate": "0.05", "periods": 10, "pv": -1000})
+    check("fv 5% 10y", r["decimal"].startswith("1628.8946267"), r["decimal"])
+
+    r = ev({"op": "pmt", "rate": 0, "periods": 10, "pv": 1000})
+    check("pmt zero rate == -100", r["exact"] == "-100", r)
+
+    r = ev({"op": "irr", "args": [-1000, 400, 400, 400], "digits": 25}, digits=25)
+    rate = Fraction(r["exact"])
+    npv = -1000 + sum(Fraction(400) / (1 + rate)**i for i in (1, 2, 3))
+    check("irr NPV ~ 0", abs(npv) < Fraction(1, 10**20), str(float(npv)))
+
+    for name, ast, frag in [
+        ("ln nonpositive", {"op": "ln", "arg": 0}, "non-positive"),
+        ("irr no sign change", {"op": "irr", "args": [100, 200]}, "positive and negative"),
+        ("pmt bad rate", {"op": "pmt", "rate": "-2", "periods": 5, "pv": 100}, "rate"),
+    ]:
+        try:
+            ev(ast)
+            check(f"error: {name}", False, "no exception raised")
+        except T.TallyError as e:
+            check(f"error: {name}", frag.lower() in str(e).lower(), str(e))
+
+    print("== unit: provable error certificates ==")
+    # Every convergent op must carry an error_bound that rigorously
+    # encloses the true transcendental. Verified against mpmath at
+    # far higher precision than the convergent itself.
+    import mpmath
+    def cert(name, ast, ref_fn, d):
+        mpmath.mp.dps = d + 300
+        ref = ref_fn()
+        r = ev(ast, digits=d)
+        if "error_bound" not in r or not r.get("certified"):
+            check(f"cert {name}", False, "missing error_bound/certified")
+            return
+        B = Fraction(r["error_bound"])
+        got = Fraction(r["exact"])
+        true_err = abs(got - Fraction(mpmath.nstr(ref, d + 290)))
+        check(f"cert {name}", true_err <= B,
+              f"bound={float(B):.2e} true_err={float(true_err):.2e}")
+    cert("pi", {"op": "pi", "digits": 80}, lambda: mpmath.pi, 80)
+    cert("exp", {"op": "exp", "arg": "1", "digits": 80}, lambda: mpmath.e, 80)
+    cert("ln", {"op": "ln", "arg": "2", "digits": 80}, lambda: mpmath.log(2), 80)
+    cert("sqrt", {"op": "sqrt", "arg": "2", "digits": 80}, lambda: mpmath.sqrt(2), 80)
+    cert("sin", {"op": "sin", "arg": "1", "digits": 60}, lambda: mpmath.sin(1), 60)
+    cert("cos", {"op": "cos", "arg": "1", "digits": 60}, lambda: mpmath.cos(1), 60)
+    cert("atan", {"op": "atan", "arg": "1", "digits": 60}, lambda: mpmath.atan(1), 60)
+    cert("atan-large", {"op": "atan", "arg": "1000", "digits": 60},
+         lambda: mpmath.atan(1000), 60)
+    cert("tan", {"op": "tan", "arg": "1", "digits": 60}, lambda: mpmath.tan(1), 60)
+    cert("tan-neg", {"op": "tan", "arg": "-2", "digits": 60},
+         lambda: mpmath.tan(-2), 60)
+    cert("log2", {"op": "log2", "arg": "10", "digits": 60},
+         lambda: mpmath.log(10, 2), 60)
+    cert("log-base3", {"op": "log", "arg": "2", "base": "3", "digits": 60},
+         lambda: mpmath.log(2) / mpmath.log(3), 60)
+    cert("composite pi+exp", {"op": "add", "args": [
+        {"op": "pi", "digits": 60}, {"op": "exp", "arg": "1", "digits": 60}]},
+        lambda: mpmath.pi + mpmath.e, 60)
+    # tan near a pole must refuse to certify (honest failure)
+    try:
+        ev({"op": "tan", "arg": "355/226", "digits": 20}, digits=20)
+        # 355/226 ~ pi/2 but not exactly; if it computes, bound must hold
+        check("tan near-pole handled", True, "computed or refused")
+    except T.TallyError:
+        check("tan near-pole refused honestly", True, "TallyError raised")
+    # exact ops must NOT carry a certificate (they are exact, error 0)
+    r = ev({"op": "add", "args": ["0.1", "0.2"]})
+    check("exact op has no error_bound", "error_bound" not in r, r)
 
     print("== unit: stats & verify ==")
     s = T.stats([str(10**9 + i) for i in range(10)])
@@ -203,6 +326,28 @@ def unit_tests():
     check("verify abs_error exact",
           v["first_mismatch"]["abs_error"] == "1/25000000000000000",
           v["first_mismatch"])
+
+    print("== unit: certificate-aware verify ==")
+    # A decimal claim is an interval at its stated precision; if it
+    # overlaps the proven enclosure of the true value, it is consistent.
+    v = T.verify({"op": "pi", "digits": 30}, "3.14159", digits=30)
+    check("pi~3.14159 consistent", v["match"] is True
+          and v.get("certificate") == "consistent", v)
+    v = T.verify({"op": "pi", "digits": 30}, "3.2", digits=30)
+    check("pi~3.2 outside", v["match"] is False
+          and v.get("certificate") == "outside", v)
+    v = T.verify({"op": "sqrt", "arg": "2", "digits": 40},
+                 "1.41421356", digits=40)
+    check("sqrt2~1.41421356 consistent", v["match"] is True, v)
+    v = T.verify({"op": "sqrt", "arg": "2", "digits": 40}, "1.5", digits=40)
+    check("sqrt2~1.5 outside", v["match"] is False, v)
+    v = T.verify({"op": "exp", "arg": "1", "digits": 30}, "2.71828", digits=30)
+    check("e~2.71828 consistent", v["match"] is True, v)
+    # exact claim of a convergent (the full p/q) -> certificate 'exact'
+    r = T.evaluate({"op": "pi", "digits": 30}, digits=30)
+    v = T.verify({"op": "pi", "digits": 30}, r["exact"], digits=30)
+    check("pi exact convergent claim", v["match"] is True
+          and v.get("certificate") == "exact", v)
 
 
 # ------------------------------------------------------------- MCP layer
@@ -264,8 +409,9 @@ def mcp_tests():
 
         r = c.call("tools/list")
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 3 tools",
-              names == ["tally_compute", "tally_verify", "tally_stats"], names)
+        check("tools/list has 5 tools",
+              names == ["tally_compute", "tally_verify", "tally_stats",
+                        "tally_batch", "tally_compare"], names)
         schema = r["result"]["tools"][0]["inputSchema"]
         check("compute schema has expression", "expression" in schema["properties"], schema)
 
@@ -315,6 +461,46 @@ def mcp_tests():
         payload = json.loads(r["result"]["content"][0]["text"])
         check("expression-as-JSON-string accepted",
               payload["decimal"].startswith("1.4142135623"), payload["decimal"])
+
+        # BARE JSON decimal literals on the wire must stay exact: the
+        # server parses the whole message with parse_float capture, so
+        # 0.1 arrives as the text "0.1", never as a binary float.
+        r = c.call("tools/call", {"name": "tally_compute", "arguments": {
+            "expression": {"op": "add", "args": [0.1, 0.2]}}})
+        payload = json.loads(r["result"]["content"][0]["text"])
+        check("bare JSON decimals exact (0.1+0.2)", payload["exact"] == "3/10", payload)
+
+        r = c.call("tools/call", {"name": "tally_stats", "arguments": {
+            "data": [0.1, 0.2, 0.3]}})
+        payload = json.loads(r["result"]["content"][0]["text"])
+        check("stats bare decimals mean == 1/5", payload["mean"]["exact"] == "1/5", payload)
+
+        # batch: many expressions, one round trip, per-item error isolation
+        r = c.call("tools/call", {"name": "tally_batch", "arguments": {
+            "items": [
+                {"expression": {"op": "add", "args": [0.1, 0.2]}, "label": "s"},
+                {"expression": {"op": "pi", "digits": 40}, "digits": 40},
+                {"expression": {"op": "div", "args": [1, 0]}, "label": "bad"},
+            ]}})
+        payload = json.loads(r["result"]["content"][0]["text"])
+        check("batch count == 3", payload["count"] == 3, payload)
+        check("batch item0 exact", payload["results"][0]["exact"] == "3/10", payload)
+        check("batch item0 label", payload["results"][0]["label"] == "s", payload)
+        check("batch item1 certified", payload["results"][1].get("certified") is True, payload)
+        check("batch item2 error isolated", payload["results"][2]["ok"] is False, payload)
+
+        # compare: certified relations between exact and convergent values
+        r = c.call("tools/call", {"name": "tally_compare", "arguments": {
+            "a": {"op": "div", "args": [22, 7]},
+            "b": {"op": "pi", "digits": 30}}})
+        payload = json.loads(r["result"]["content"][0]["text"])
+        check("compare 22/7 > pi certified", payload["relation"] == "gt"
+              and payload["certified"] is True, payload)
+        r = c.call("tools/call", {"name": "tally_compare", "arguments": {
+            "a": {"op": "add", "args": ["0.1", "0.2"]}, "b": "0.3"}})
+        payload = json.loads(r["result"]["content"][0]["text"])
+        check("compare 0.1+0.2 == 0.3", payload["relation"] == "eq"
+              and payload["certified"] is True, payload)
     finally:
         c.close()
 

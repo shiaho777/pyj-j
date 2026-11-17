@@ -373,7 +373,13 @@ def main(n_batches=300, seed=11, depth_units=1_000_000, offset_bps=60):
     print(f"f64   (+amm)       : valid {f_v}/{n_batches}  "
           f"volume {f_vol:,}  surplus {float(f_sup):.3e}")
     print("=" * 64)
+    # gate: the exact solver must be 100% valid or this is a regression
+    if ex_v != n_batches or amm_v != n_batches:
+        print(f"GATE FAILED: exact valid {ex_v}/{n_batches} (peer), "
+              f"{amm_v}/{n_batches} (+amm)")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

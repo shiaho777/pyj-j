@@ -18,3 +18,18 @@ __pycache__/
 # vendor demo binary (rebuilt by build.sh / vendor Makefile)
 vendor/vendor_demo
 solver/scanstore.db
+
+# wheel build artifacts (rebuilt by setup.py / CI)
+build/
+dist/
+*.egg-info/
+
+# external engine source (cloned by build.sh / CI, not part of this repo)
+jsource/
+
+# host/train binary (rebuilt by build.sh)
+host/train
+
+# Lean formalization build artifacts
+formal/.lake/
+formal/build/

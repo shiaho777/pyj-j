@@ -20,6 +20,7 @@ Nothing may print to stdout except protocol messages; logs go to stderr.
 import json
 import os
 import sys
+from fractions import Fraction
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("PYJ_LIBPATH", os.path.join(_HERE, "jlibrary", "bin"))
@@ -28,7 +29,7 @@ sys.path.insert(0, _HERE)
 import tally_ast as T  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "tally", "version": "0.1.0"}
+SERVER_INFO = {"name": "tally", "version": "1.0.0"}
 
 AST_DOC = (
     "Tally AST. Every value is EXACT: integers stay integers, decimals and "
@@ -37,13 +38,18 @@ AST_DOC = (
     "numbers OK); (2) array: nested rectangular lists of numbers; "
     "(3) op node {\"op\": NAME, ...}. "
     "Arithmetic: add/sub/mul/div(args[], n-ary), neg/abs/sign/floor/ceil"
-    "(arg), pow(base,exp integer exponent), sqrt(arg, digits?), exp(arg,"
-    " digits?) -- sqrt/exp return certified rational convergents, "
-    "factorial(arg), comb/perm(n,k), gcd/lcm(args[], integers), mod(a,b). "
+    "(arg), round(arg, places -- half away from zero), pow(base,exp integer "
+    "exponent), sqrt/ln(arg, digits?), exp(arg, digits?) -- certified "
+    "rational convergents, pi(digits?) via Machin, sin/cos/tan/atan(arg, "
+    "digits?) with exact range reduction, factorial(arg), comb/perm(n,k), "
+    "gcd/lcm(args[], integers), mod(a,b). "
     "Comparisons: eq/ne/lt/le/gt/ge(a,b) -> boolean, exact. "
     "Aggregates: sum/prod/min/max(args[] or of=array), mean/var/stddev(of). "
     "Linear algebra: matmul/dot(a,b), det/inv/transpose(m), solve(a,b) -- "
     "exact rational results (e.g. inverse of a Hilbert matrix is integer). "
+    "Finance (exact rational rates): fv/pv/pmt(rate, periods, payment?, "
+    "pv?, fv?), nper(rate, payment, pv, fv?), irr(args=[c0,c1,...], "
+    "digits?) -- loan/mortgage/annuity math with no float drift. "
     "Use this tool whenever a number must be RIGHT: money, rates, matrix "
     "results, combinatorics, or checking your own arithmetic."
 )
@@ -56,7 +62,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "expression": {"description": AST_DOC},
-                "digits": {"type": "integer", "minimum": 1, "maximum": 200,
+                "digits": {"type": "integer", "minimum": 1, "maximum": 1000,
                            "default": 30,
                            "description": "decimal expansion digits to return"},
             },
@@ -75,7 +81,7 @@ TOOLS = [
                 "expression": {"description": AST_DOC},
                 "claimed": {"description":
                             "the claimed value: number, string, or nested array"},
-                "digits": {"type": "integer", "minimum": 1, "maximum": 200,
+                "digits": {"type": "integer", "minimum": 1, "maximum": 1000,
                            "default": 30},
             },
             "required": ["expression", "claimed"],
@@ -95,10 +101,61 @@ TOOLS = [
                          "items": {}},
                 "ops": {"type": "array", "items": {"type": "string"},
                         "description": "subset of mean,var,stddev,min,max,sum,count"},
-                "digits": {"type": "integer", "minimum": 1, "maximum": 200,
+                "digits": {"type": "integer", "minimum": 1, "maximum": 1000,
                            "default": 30},
             },
             "required": ["data"],
+        },
+    },
+    {
+        "name": "tally_batch",
+        "description": (
+            "Evaluate MANY exact-arithmetic expressions in ONE call. Each "
+            "item is {expression, digits?, label?}; results come back as a "
+            "list in the same order, each a full compute envelope (exact, "
+            "decimal, error_bound when convergent). Use this instead of "
+            "many tally_compute calls when you have several numbers to "
+            "check at once — one round trip, shared engine warm-up. " + AST_DOC),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "list of {expression, digits?, label?}",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "expression": {"description": AST_DOC},
+                            "digits": {"type": "integer", "minimum": 1,
+                                       "maximum": 1000, "default": 30},
+                            "label": {"type": "string",
+                                      "description": "optional tag echoed back"},
+                        },
+                        "required": ["expression"],
+                    },
+                },
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "name": "tally_compare",
+        "description": (
+            "Exactly compare two expressions: returns relation ('lt','eq',"
+            "'gt') of a vs b, plus both exact values. For convergent ops "
+            "the comparison is CERTIFIED when the error enclosures do not "
+            "overlap (the relation is then provably true of the actual "
+            "values); if they overlap it reports 'indeterminate_at_precision' "
+            "and suggests more digits. Never compares binary floats. " + AST_DOC),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "a": {"description": AST_DOC},
+                "b": {"description": AST_DOC},
+                "digits": {"type": "integer", "minimum": 1, "maximum": 1000,
+                           "default": 30},
+            },
+            "required": ["a", "b"],
         },
     },
 ]
@@ -128,6 +185,20 @@ def _tool_error(message):
             "isError": True}
 
 
+# Wall-clock guard for the Python-side iterative algorithms (irr bisection,
+# atan range reduction, series term counting). The C engine calls themselves
+# are bounded by the input limits (MAX_NODES / MAX_ARRAY_ELEMS / MAX_DIGITS).
+CALL_TIMEOUT_S = float(os.environ.get("TALLY_TIMEOUT", "30"))
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise _Timeout()
+
+
 def _call_tool(name, args):
     if not isinstance(args, dict):
         raise T.TallyError("tool arguments must be an object")
@@ -146,7 +217,65 @@ def _call_tool(name, args):
         return T.stats(args["data"], ops=tuple(args.get("ops") or
                        ("mean", "var", "stddev", "min", "max", "sum", "count")),
                        digits=digits)
+    if name == "tally_batch":
+        items = args.get("items")
+        if not isinstance(items, list) or not items:
+            raise T.TallyError("batch needs a non-empty 'items' list")
+        if len(items) > 256:
+            raise T.TallyError("batch too large (> 256 items)")
+        results = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict) or "expression" not in item:
+                results.append({"index": i, "ok": False,
+                                "error": "item needs 'expression'"})
+                continue
+            d = item.get("digits", T.DEFAULT_DIGITS)
+            try:
+                env = T.evaluate(item["expression"], digits=d)
+                if "label" in item:
+                    env["label"] = item["label"]
+                env["index"] = i
+                results.append(env)
+            except T.TallyError as e:
+                results.append({"index": i, "ok": False, "error": str(e),
+                                **({"label": item["label"]} if "label" in item else {})})
+        return {"ok": True, "count": len(results), "results": results}
+    if name == "tally_compare":
+        if "a" not in args or "b" not in args:
+            raise T.TallyError("compare needs 'a' and 'b'")
+        ea = T.evaluate(args["a"], digits=digits)
+        eb = T.evaluate(args["b"], digits=digits)
+        va, vb = _scalar(ea), _scalar(eb)
+        ba = Fraction(ea["error_bound"]) if ea.get("certified") else Fraction(0)
+        bb = Fraction(eb["error_bound"]) if eb.get("certified") else Fraction(0)
+        out = {"ok": True, "a_exact": ea["exact"], "b_exact": eb["exact"]}
+        if va == vb and ba == 0 and bb == 0:
+            out["relation"] = "eq"
+            out["certified"] = True
+        elif va - ba > vb + bb:
+            out["relation"] = "gt"
+            out["certified"] = True
+        elif va + ba < vb - bb:
+            out["relation"] = "lt"
+            out["certified"] = True
+        else:
+            # enclosures overlap: relation not provable at this precision
+            out["relation"] = ("gt" if va > vb else "lt" if va < vb else "eq")
+            out["certified"] = False
+            out["note"] = ("indeterminate_at_precision: error enclosures "
+                           "overlap; increase digits to separate them")
+            out["a_error_bound"] = ea.get("error_bound", "0")
+            out["b_error_bound"] = eb.get("error_bound", "0")
+        return out
     raise KeyError(name)
+
+
+def _scalar(env):
+    """Extract a scalar Fraction from a compute envelope (reject arrays)."""
+    ex = env["exact"]
+    if isinstance(ex, list):
+        raise T.TallyError("compare needs scalar expressions, not arrays")
+    return Fraction(ex)
 
 
 def _handle(msg):
@@ -173,15 +302,29 @@ def _handle(msg):
         return _result(id_, {"tools": TOOLS})
     if method == "tools/call":
         name = params.get("name")
+        import signal
+        old = None
+        if hasattr(signal, "SIGALRM"):
+            old = signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.setitimer(signal.ITIMER_REAL, CALL_TIMEOUT_S)
         try:
             value = _call_tool(name, params.get("arguments"))
         except KeyError:
             return _error(id_, -32602, f"unknown tool {name!r}")
+        except _Timeout:
+            return _result(id_, _tool_error(
+                f"computation exceeded {CALL_TIMEOUT_S:.0f}s; simplify the "
+                "expression or lower digits (set TALLY_TIMEOUT to adjust)"))
         except T.TallyError as e:
             return _result(id_, _tool_error(str(e)))
         except Exception as e:                       # never leak a traceback
             _log("internal error:", repr(e))
             return _result(id_, _tool_error(f"internal: {e!r}"))
+        finally:
+            if hasattr(signal, "SIGALRM"):
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                if old is not None:
+                    signal.signal(signal.SIGALRM, old)
         return _result(id_, _tool_result(value))
     if method == "shutdown":
         return _result(id_, None)
@@ -226,7 +369,10 @@ def main():
         if raw == "":
             continue
         try:
-            msg = json.loads(raw)
+            # parse_float captures decimal literals as exact text BEFORE any
+            # binary float can touch them — the core Tally contract applies
+            # to the whole wire message, not just stringified expressions.
+            msg = T.loads_exact(raw)
         except Exception:
             resp = _error(None, -32700, "parse error")
             out.write(json.dumps(resp) + "\n")

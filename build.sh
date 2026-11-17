@@ -65,8 +65,10 @@ fi
 CC="${CC:-cc}"
 UNAME="$(uname)"
 if [ "$UNAME" = "Darwin" ]; then
-  # jsource's build leaves libj.dylib with a bare install_name; make it absolute
-  otool -D "$LIBDIR/libj.dylib" | grep -q "^$LIBDIR" || \
+  # jsource's build leaves libj.dylib with a bare install_name; make it absolute.
+  # otool -D prints the file path on line 1 and the install name on line 2 —
+  # grep the whole output would false-match the path line and skip the fix.
+  otool -D "$LIBDIR/libj.dylib" | tail -n +2 | grep -q "^$LIBDIR" || \
     install_name_tool -id "$LIBDIR/libj.dylib" "$LIBDIR/libj.dylib"
   # JE dlopens "libgmp.dylib" from its lib dir at startup
   [ -f "$LIBDIR/libgmp.dylib" ] || cp "$(brew --prefix)/lib/libgmp.dylib" "$LIBDIR/"
@@ -82,7 +84,13 @@ $CC -O2 -fPIC -shared -o pyj.so pyj.c \
 # host/train: the non-Python C host driving libj through the raw ABI
 HOSTBIN=""
 if [ "$UNAME" = "Darwin" ]; then HOSTBIN="host/train"; else HOSTBIN="host/train"; fi
-$CC -O2 host/train.c -o "$HOSTBIN" -I"$LIBDIR" -L"$LIBDIR" -lj   && echo "built $HOSTBIN" || echo "WARNING: host/train build failed (non-fatal)"
+HOSTPAD=""
+[ "$UNAME" = "Darwin" ] && HOSTPAD="-Wl,-headerpad_max_install_names"
+$CC -O2 host/train.c -o "$HOSTBIN" -I"$LIBDIR" -L"$LIBDIR" -lj $HOSTPAD \
+  && echo "built $HOSTBIN" || echo "WARNING: host/train build failed (non-fatal)"
+if [ "$UNAME" = "Darwin" ]; then
+  install_name_tool -change libj.dylib "$LIBDIR/libj.dylib" "$HOSTBIN" 2>/dev/null || true
+fi
 
 echo "built pyj.so"
 

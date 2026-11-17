@@ -121,20 +121,35 @@ and emits the source of one explicit J verb — straight-line forward code, then
 straight-line VJP code, the way you would have written it by hand. Constants
 bake in at compile time; dead subgraphs get pruned.
 
-Measured on a 96-sample softmax forward+backward:
+Measured on a 96-sample softmax forward+backward (`python3 bench_tensor.py`,
+reproducible, writes `bench_tensor.json`):
 
 | | per step |
 |---|---|
-| rebuild tape + ADGET | 4.05 ms |
-| compiled verb | 0.02 ms |
+| rebuild tape + ADGET (interpreted) | ~2.5 ms |
+| compiled verb | ~0.03 ms |
 
-That's ~200× (4.05 ms → 0.02 ms), and it's the path I'd take further: the generated verb is
-ordinary J, so it can eventually be replayed, cached, or shipped to a real
-backend.
+That's an **~85× internal speedup** of the compiled path over the
+interpreted tape — *same engine, same numerics*. It is **not** a claim of
+beating numpy/torch: on raw float64 ops numpy is faster (see the honest
+benchmark below). The compiler's value is that the generated verb is
+ordinary J, so it can be replayed, cached, or shipped to a real backend.
 
-$$
-\frac{\text{rebuild tape + ADGET}}{\text{compiled verb}} = \frac{4.05\ \text{ms}}{0.02\ \text{ms}} \approx 200\times
-$$
+### Honest performance position
+
+`bench_tensor.py` reports two separate claims and never conflates them:
+
+- **vs numpy on raw array ops:** numpy wins on its own turf. On this
+  machine, 512×512 float64 matmul is ~90× faster in numpy (Accelerate
+  BLAS) than in the J engine; a 1M-element sum is comparable. The kernel
+  is *not* trying to out-run numpy on float64 — that is a non-goal.
+- **compiler vs interpreted tape:** the ~85× above is an internal
+  optimization ratio, explicitly labeled as such.
+
+Where the kernel *does* win is exactness, not float64 speed — see Tally
+and `bench_tally.py` (exact determinants ~7× faster than sympy, exact
+variance ~1.8× faster than Python fractions, with results that are
+actually correct).
 
 ## The bridge
 
@@ -232,18 +247,40 @@ Phase 3 — prove the niche:
       C app that trains in-process and serves predictions. No jsource, no
       Python, no engine build step: `make && ./vendor_demo`.
 
-Phase 4 — exact arithmetic as an agent tool (in progress):
+Phase 4 — exact arithmetic as an agent tool (done):
 
 - [x] Tally MCP server (`tally_server.py` + `tally_ast.py`): three tools —
       `tally_compute`, `tally_verify`, `tally_stats`. Every result is an
-      exact integer or `p/q` rational; floats never enter the engine.
+      exact integer or `p/q` rational; floats never enter the engine
+      (bare JSON decimal literals on the wire are captured as exact text).
 - [x] `tally_verify` audit notes: on a mismatch it reports where the claim
       went wrong (wrong magnitude / wrong digit #N / wrong sign), not just
       that it mismatched.
 - [x] Evidence pack (`recon/`): a 15-point shootout vs terminal defaults
       (float64, bc, numpy) and 13 caught-in-the-act cards for the README.
-- [x] Repo entry points: `make tally-test` (73 checks), `make demo`,
+- [x] Repo entry points: `make tally-test` (91 checks), `make demo`,
       `make shootout`, `make cards`, `make host`, `make vendor`.
+
+Phase 5 — harden into a top-tier exact kernel (done):
+
+- [x] v1 transcendentals: `ln`, `pi` (Machin), `sin`/`cos`/`tan`/`atan`,
+      `round` — range-reduced series with guard digits, certified rational
+      convergents up to **1000 digits** (was 200).
+- [x] v1 exact finance: `fv`/`pv`/`pmt`/`nper`/`irr` with rational rates;
+      `pv(pmt(...))` retires a loan *exactly*, no float drift.
+- [x] Batched engine readback: round trips scale with total digits, not
+      element count (large arrays no longer cost ~6 calls per element).
+- [x] Large-scale differential verification: `make tally-fuzz`
+      (`tally_fuzz.py`) — thousands of random cases checked against
+      Python `fractions`, sympy Rational matrices, and mpmath at
+      digits+60. Fail-fast on any mismatch.
+- [x] Honest benchmarks: `make tally-bench` (`bench_tally.py`) vs
+      fractions/sympy/mpmath, and `bench_tensor.py` vs numpy — both
+      directions reported, no cherry-picked internal-only ratios.
+- [x] `solver/` productized: stable public API (`solver/__init__.py`),
+      API docs (`solver/README.md`), and real test gates — `make verify`
+      now exits non-zero if the exact solver ever produces an invalid
+      settlement (19 stress scenarios + 300-book tournament, 100% valid).
 
 ## Embedding it yourself
 

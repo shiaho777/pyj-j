@@ -1,0 +1,106 @@
+name: wheels
+
+# Build distributable wheels with the J engine bundled inside, so
+# `pip install tally` works with zero setup on every supported platform.
+# Triggered on version tags and manual dispatch; artifacts are uploaded
+# for inspection / release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }} py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14        # arm64
+            python: '3.11'
+          - os: macos-13        # x86_64
+            python: '3.11'
+          - os: ubuntu-24.04    # x86_64
+            python: '3.11'
+          - os: ubuntu-24.04-arm  # aarch64
+            python: '3.11'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python3 -m pip install numpy wheel setuptools
+          brew install gmp
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install numpy wheel setuptools
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev clang patchelf
+
+      - name: Build J engine from jsource
+        run: |
+          git clone --depth 1 https://github.com/jsoftware/jsource.git ../jsource
+          cd ../jsource/make2
+          ./build_libj.sh
+          ./build_jconsole.sh
+          ./cpbin.sh
+
+      - name: Copy engine runtime into project
+        run: |
+          mkdir -p jlibrary/bin
+          cp ../jsource/jlibrary/bin/* jlibrary/bin/ || true
+          # Linux: alias the avx build to libj.so if needed
+          if [ -f jlibrary/bin/libjavx2.so ] && [ ! -f jlibrary/bin/libj.so ]; then
+            cp jlibrary/bin/libjavx2.so jlibrary/bin/libj.so
+          fi
+
+      - name: Bundle GMP for Linux wheel
+        if: runner.os == 'Linux'
+        run: |
+          # engine dlopens libgmp.so.10 then falls back to libpath/libgmp.so
+          GMP_SO=$(ldconfig -p | grep 'libgmp.so.10' | awk '{print $NF}' | head -1)
+          if [ -n "$GMP_SO" ]; then
+            cp "$GMP_SO" jlibrary/bin/libgmp.so
+            cp "$GMP_SO" jlibrary/bin/libgmp.so.10
+          fi
+
+      - name: Build wheel
+        run: python3 setup.py bdist_wheel
+
+      - name: Smoke test (clean venv)
+        run: |
+          python3 -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/tally-*.whl
+          /tmp/smoke/bin/python -c "import tally; assert tally.compute('0.1+0.2')['exact']=='3/10'; r=tally.pi(60); assert r['certified']; print('smoke OK', tally.__version__)"
+          /tmp/smoke/bin/tally 0.1 + 0.2 --exact-only
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-py${{ matrix.python }}
+          path: dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 -m pip install setuptools wheel
+      - run: python3 setup.py sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz

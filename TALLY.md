@@ -62,6 +62,15 @@ Tally's contract:
   - linear algebra: `matmul`/`dot` (`a`,`b`) · `det`/`inv`/`transpose` (`m`) ·
     `solve` (`a`,`b`) — exact rational linear algebra (Hilbert₄ inverse is
     exactly integer)
+  - rounding: `round` (`arg`, `places`) — exact half-away-from-zero rounding
+    to a stated decimal precision (auditor-friendly, never binary-float)
+  - transcendentals (v1): `ln` (`arg`, `digits?`) · `pi` (`digits?`, Machin
+    formula) · `sin`/`cos`/`tan`/`atan` (`arg`, `digits?`) — range-reduced
+    series with guard digits, certified rational convergents up to 1000 digits
+  - finance (v1, exact rational rates): `fv`/`pv`/`pmt` (`rate`, `periods`,
+    `payment?`, `pv?`, `fv?`) · `nper` (`rate`, `payment`, `pv`, `fv?`) ·
+    `irr` (`args=[c0,c1,…]`, `digits?`) — loan/mortgage/annuity math where
+    `pv(pmt(...))` retires the loan *exactly*, no float drift
 
 ### Examples
 
@@ -131,19 +140,42 @@ rational result is returned.
 DYLD_LIBRARY_PATH=jlibrary/bin PYJ_LIBPATH=jlibrary/bin python3 test_tally.py
 ```
 
-73 tests: every op, exactness contracts from `recon/REPORT.md`, edge/error
-handling, and a real MCP stdio handshake (NDJSON framing, unknown-method and
-tool-error paths, 200! across the wire).
+91 tests: every op (including v1 transcendentals and finance), exactness
+contracts from `recon/REPORT.md`, edge/error handling, and a real MCP stdio
+handshake (NDJSON framing, unknown-method and tool-error paths, 200! across
+the wire, bare JSON decimal literals staying exact).
 
-## v0 limits (honest ones)
+Large-scale differential verification (independent references):
+
+```sh
+python3 tally_fuzz.py 300        # ~3000 checks, seed 20261116
+python3 tally_fuzz.py 3000 42    # scale up, fixed seed
+```
+
+Every result is checked against Python `fractions` (exact), sympy Rational
+matrices (exact), or mpmath at digits+60 (convergents). Fail-fast: one wrong
+answer aborts the run.
+
+Honest performance benchmark vs the tools an agent would reach for:
+
+```sh
+python3 bench_tally.py           # writes bench_tally.json
+```
+
+Tally beats sympy on exact determinants (~7x on Hilbert₆) and Python
+fractions on exact variance (~1.8x); mpmath is faster on pure transcendental
+evaluation (binary mpf vs rational convergents) — Tally's output there is an
+exact rational, which mpmath's is not. The benchmark reports both directions.
+
+## Limits (honest ones)
 
 - `pow` needs an integer exponent (use `sqrt`/`exp` for fractional powers);
-  `exp`/`sqrt` return certified rational convergents, not transcendental
-  results (impossible by definition — that's the point).
-- No complex numbers, no symbolic algebra, no strings of `sin/cos/log` yet.
+  `exp`/`sqrt`/`ln`/trig return certified rational convergents, not
+  transcendental results (impossible by definition — that's the point).
+- No complex numbers, no symbolic algebra.
 - One J engine per process, single-threaded — same contract as the pyj ABI.
-- Per-call limits (2000 AST nodes, 20k array elements, 200 digits, 200!
-  still fine) are guardrails, not the roadmap.
+- Per-call limits (2000 AST nodes, 20k array elements, 1000 digits) are
+  guardrails, not the roadmap.
 
 ## License
 

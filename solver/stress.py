@@ -103,11 +103,13 @@ def run_scenario(name, rng, n_books, pool=None, **kw):
           f"| f64: {f_v}/{n_books} valid, vol-ratio "
           f"{(f_vol/ex_vol if ex_vol else 0)*100:5.1f}%"
           + (f", routed {rout:4.1f}%" if pool else ""))
-    return dict(name=name, cap=cap, f64_valid=f_v, n=n_books)
+    return dict(name=name, cap=cap, f64_valid=f_v, n=n_books,
+                exact_valid=ex_v)
 
 
 def main():
     rng = random.Random(42)
+    results = []
     print("=" * 96)
     print("  STRESS MATRIX -- exact solver must stay 100% valid; capture rate is quality")
     print("=" * 96)
@@ -115,44 +117,51 @@ def main():
     base = dict(n=10, tight=20, lo=10, hi=1000)
 
     print("\n[batch size]")
-    run_scenario("sparse (2-6)", rng, 200, **{**base, "n": 4})
-    run_scenario("normal (10)", rng, 200, **{**base, "n": 10})
-    run_scenario("dense (100)", rng, 60, **{**base, "n": 100})
+    results.append(run_scenario("sparse (2-6)", rng, 200, **{**base, "n": 4}))
+    results.append(run_scenario("normal (10)", rng, 200, **{**base, "n": 10}))
+    results.append(run_scenario("dense (100)", rng, 60, **{**base, "n": 100}))
 
     print("\n[limit tightness]")
-    run_scenario("loose 0-50bps", rng, 200, **{**base, "tight": 50})
-    run_scenario("normal 0-20bps", rng, 200, **{**base, "tight": 20})
-    run_scenario("razor 0-2bps", rng, 200, **{**base, "tight": 2})
-    run_scenario("boundary 0bps", rng, 200, **{**base, "tight": 0})
+    results.append(run_scenario("loose 0-50bps", rng, 200, **{**base, "tight": 50}))
+    results.append(run_scenario("normal 0-20bps", rng, 200, **{**base, "tight": 20}))
+    results.append(run_scenario("razor 0-2bps", rng, 200, **{**base, "tight": 2}))
+    results.append(run_scenario("boundary 0bps", rng, 200, **{**base, "tight": 0}))
 
     print("\n[size disparity]")
-    run_scenario("dust 1-10", rng, 200, **{**base, "lo": 1, "hi": 10})
-    run_scenario("whale 1-100000", rng, 200, **{**base, "lo": 1, "hi": 100000})
+    results.append(run_scenario("dust 1-10", rng, 200, **{**base, "lo": 1, "hi": 10}))
+    results.append(run_scenario("whale 1-100000", rng, 200, **{**base, "lo": 1, "hi": 100000}))
 
     print("\n[adversarial]")
-    run_scenario("one-sided book", rng, 100, **{**base, "one_side": True})
+    results.append(run_scenario("one-sided book", rng, 100, **{**base, "one_side": True}))
     rng2 = random.Random(7)
-    run_scenario("exact-boundary dup", rng2, 100, **{**base, "tight": 0})
+    results.append(run_scenario("exact-boundary dup", rng2, 100, **{**base, "tight": 0}))
 
     print("\n[amm routing: pool price offset vs book fair]")
     DEPTH = 1_000_000
-    run_scenario("pool aligned 0bps", rng, 200, pool=(0, DEPTH), **base)
-    run_scenario("pool tight +/-15bps", rng, 200, pool=(15, DEPTH), **base)
-    run_scenario("pool normal +/-60bps", rng, 200, pool=(60, DEPTH), **base)
-    run_scenario("pool wide +/-200bps", rng, 200, pool=(200, DEPTH), **base)
+    results.append(run_scenario("pool aligned 0bps", rng, 200, pool=(0, DEPTH), **base))
+    results.append(run_scenario("pool tight +/-15bps", rng, 200, pool=(15, DEPTH), **base))
+    results.append(run_scenario("pool normal +/-60bps", rng, 200, pool=(60, DEPTH), **base))
+    results.append(run_scenario("pool wide +/-200bps", rng, 200, pool=(200, DEPTH), **base))
 
     print("\n[amm routing: depth]")
-    run_scenario("shallow 50k units", rng, 200, pool=(60, 50_000), **base)
-    run_scenario("deep 10M units", rng, 200, pool=(60, 10_000_000), **base)
+    results.append(run_scenario("shallow 50k units", rng, 200, pool=(60, 50_000), **base))
+    results.append(run_scenario("deep 10M units", rng, 200, pool=(60, 10_000_000), **base))
 
     print("\n[amm routing: adversarial]")
-    run_scenario("one-sided + pools", rng, 100, pool=(60, DEPTH),
-                 **{**base, "one_side": True})
-    run_scenario("razor + stale pools", rng, 200, pool=(200, DEPTH),
-                 **{**base, "tight": 2})
+    results.append(run_scenario("one-sided + pools", rng, 100, pool=(60, DEPTH),
+                                **{**base, "one_side": True}))
+    results.append(run_scenario("razor + stale pools", rng, 200, pool=(200, DEPTH),
+                                **{**base, "tight": 2}))
 
     print("\n" + "=" * 96)
+    bad = [r for r in results if r["exact_valid"] != r["n"]]
+    if bad:
+        print("GATE FAILED: exact solver invalid in "
+              + ", ".join(r["name"] for r in bad))
+        return 1
+    print(f"GATE PASSED: exact solver 100% valid across {len(results)} scenarios")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

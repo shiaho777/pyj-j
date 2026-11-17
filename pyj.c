@@ -203,12 +203,22 @@ static PyMethodDef pyj_methods[] = {
   {NULL, NULL, 0, NULL}
 };
 
+/* Module name is parameterized so the same source builds as the standalone
+   `pyj` extension (dev/tests) or as `tally._pyj` inside the wheel. */
+#ifndef PYJ_MODULE_NAME
+#define PYJ_MODULE_NAME "pyj"
+#endif
+#ifndef PYJ_INIT_FUNC
+#define PYJ_INIT_FUNC PyInit_pyj
+#endif
+
 static struct PyModuleDef pyjmodule = {
-  PyModuleDef_HEAD_INIT, "pyj", "Embed the J engine in Python (numpy bridge)",
+  PyModuleDef_HEAD_INIT, PYJ_MODULE_NAME,
+  "Embed the J engine in Python (numpy bridge)",
   -1, pyj_methods
 };
 
-PyMODINIT_FUNC PyInit_pyj(void)
+PyMODINIT_FUNC PYJ_INIT_FUNC(void)
 {
   import_array();
   if (g_jt) Py_RETURN_NONE;  /* re-init no-op */

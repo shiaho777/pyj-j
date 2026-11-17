@@ -9,11 +9,19 @@ else
   export LD_LIBRARY_PATH := $(PYJ_LIBPATH)
 endif
 
-.PHONY: tally-test demo shootout cards vendor host all scan scan-all verify
+.PHONY: tally-test tally-fuzz tally-bench demo shootout cards vendor host all scan scan-all verify
 
-# Full Tally test suite: unit + MCP stdio integration (73 checks)
+# Full Tally test suite: unit + MCP stdio integration (91 checks)
 tally-test:
 	python3 test_tally.py
+
+# Large-scale differential verification vs fractions/sympy/mpmath
+tally-fuzz:
+	python3 tally_fuzz.py 300
+
+# Honest performance benchmark vs fractions/sympy/mpmath
+tally-bench:
+	python3 bench_tally.py
 
 # Money-checker demo over a real MCP handshake
 demo:
@@ -29,8 +37,10 @@ cards:
 
 # Route 2: C host driving libj through the raw ABI
 host:
-	cc -O2 host/train.c -o host/train -Ijlibrary/bin -Ljlibrary/bin -lj
-	cd .. && DYLD_LIBRARY_PATH=pyj/jlibrary/bin ./pyj/host/train jlibrary/bin pyj
+	cc -O2 host/train.c -o host/train -Ijlibrary/bin -Ljlibrary/bin -lj \
+	  $(if $(filter Darwin,$(UNAME_S)),-Wl$(comma)-headerpad_max_install_names)
+	./host/train $(CURDIR)/jlibrary/bin $(CURDIR)
+comma := ,
 
 # Route 3: zero-build vendor demo
 vendor:
