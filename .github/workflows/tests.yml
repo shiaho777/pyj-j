@@ -7,7 +7,7 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-15-arm64    # arm64 (macos-14 retired 2026-11-02)
+    runs-on: macos-15          # arm64 (macos-15-arm64 is an image name, not a label)
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
