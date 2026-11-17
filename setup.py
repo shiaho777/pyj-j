@@ -80,7 +80,7 @@ class BuildExtWithEngine(build_ext):
             self._bundle_linux(ext_path, pkg_dir)
 
     def _bundle_macos(self, ext_path, pkg_dir):
-        for fname in ("libj.dylib", "libgmp.dylib", "profile.ijs"):
+        for fname in ("libj.dylib", "profile.ijs"):
             src = os.path.join(LIBDIR, fname)
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(pkg_dir, fname))
@@ -91,10 +91,34 @@ class BuildExtWithEngine(build_ext):
             subprocess.run(["install_name_tool", *args],
                            check=False, capture_output=True)
 
+        # GMP: prefer jsource's vendored dylib -- it only links libSystem
+        # (self-contained). A brew-installed libgmp.dylib instead carries an
+        # absolute LC_LOAD_DYLIB to /opt/homebrew/... which breaks the wheel
+        # on any machine without brew at that exact path. The engine dlopens
+        # libpath/libgmp.dylib before the bare name, so the bundled copy
+        # wins over any system GMP.
+        gmp_src = None
+        for cand in (os.path.join(HERE, "jsource", "mpir", "apple", "macos",
+                                  "libgmp.dylib"),
+                     os.path.join(HERE, "..", "jsource", "mpir", "apple",
+                                  "macos", "libgmp.dylib"),
+                     os.path.join(LIBDIR, "libgmp.dylib")):
+            if os.path.isfile(cand):
+                gmp_src = cand
+                break
+        if gmp_src:
+            shutil.copy2(gmp_src, libgmp)
+
         if os.path.isfile(libj):
             _tool("-id", "@loader_path/libj.dylib", libj)
         if os.path.isfile(libgmp):
+            # fix both the id AND the brew self-reference inside the vendored
+            # dylib (its load commands still point at /opt/homebrew or
+            # /usr/local); after this it resolves only within the package.
             _tool("-id", "@loader_path/libgmp.dylib", libgmp)
+            for old in ("/opt/homebrew/opt/gmp/lib/libgmp.10.dylib",
+                        "/usr/local/opt/gmp/lib/libgmp.10.dylib"):
+                _tool("-change", old, "@loader_path/libgmp.dylib", libgmp)
         old = os.path.join(LIBDIR, "libj.dylib")
         _tool("-change", old, "@loader_path/libj.dylib", ext_path)
         _tool("-change", "libj.dylib", "@loader_path/libj.dylib", ext_path)

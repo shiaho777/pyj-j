@@ -7,7 +7,7 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-14          # arm64
+    runs-on: macos-15-arm64    # arm64 (macos-14 retired 2026-11-02)
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -19,13 +19,18 @@ jobs:
 
       - name: Install numpy + gmp
         run: |
-          python3 -m pip install numpy
-          brew install gmp llvm
+          python3 -m pip install numpy mpmath sympy
+          # nasm: jsource x86_64 SHA assembly (harmless on arm64)
+          brew install gmp llvm nasm
           echo "MLIR_BIN=$(brew --prefix llvm)/bin" >> $GITHUB_ENV
 
       - name: Build J engine from jsource
         run: |
-          git clone --depth 1 https://github.com/jsoftware/jsource.git ../jsource
+          # pin to the exact commit the local engine was built + tested from
+          git init ../jsource
+          git -C ../jsource remote add origin https://github.com/jsoftware/jsource.git
+          git -C ../jsource fetch --depth 1 origin ed1386488be571d690d35d2d80dc9ae624424441
+          git -C ../jsource checkout FETCH_HEAD
           cd ../jsource/make2
           # darwin arm64 release build (matches jsource build notes)
           ./build_libj.sh
@@ -85,13 +90,17 @@ jobs:
 
       - name: Install build prereqs
         run: |
-          python3 -m pip install numpy
+          python3 -m pip install numpy mpmath sympy
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev clang
+          sudo apt-get install -y libgmp-dev clang nasm
 
       - name: Build J engine from jsource
         run: |
-          git clone --depth 1 https://github.com/jsoftware/jsource.git ../jsource
+          # pin to the exact commit the local engine was built + tested from
+          git init ../jsource
+          git -C ../jsource remote add origin https://github.com/jsoftware/jsource.git
+          git -C ../jsource fetch --depth 1 origin ed1386488be571d690d35d2d80dc9ae624424441
+          git -C ../jsource checkout FETCH_HEAD
           cd ../jsource/make2
           ./build_libj.sh        # auto-detects linux/j64avx2
           ./build_jconsole.sh
