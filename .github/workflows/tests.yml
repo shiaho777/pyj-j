@@ -41,6 +41,11 @@ jobs:
         run: |
           mkdir -p jlibrary/bin
           cp ../jsource/jlibrary/bin/* jlibrary/bin/ || true
+          # macOS Intel: cpbin.sh only emits libjavx2.dylib for j64avx2;
+          # alias it to libj.dylib so build.sh's -lj resolves.
+          if [ -f jlibrary/bin/libjavx2.dylib ] && [ ! -f jlibrary/bin/libj.dylib ]; then
+            cp jlibrary/bin/libjavx2.dylib jlibrary/bin/libj.dylib
+          fi
 
       - name: Build pyj
         run: ./build.sh

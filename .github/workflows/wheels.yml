@@ -75,6 +75,12 @@ jobs:
           if [ -f jlibrary/bin/libjavx2.so ] && [ ! -f jlibrary/bin/libj.so ]; then
             cp jlibrary/bin/libjavx2.so jlibrary/bin/libj.so
           fi
+          # macOS Intel: jplatform64 auto-selects j64avx2, and cpbin.sh only
+          # emits libjavx2.dylib for that variant (the plain libj.dylib copy
+          # is gated on j64/j64arm builds). Alias it so -lj resolves.
+          if [ -f jlibrary/bin/libjavx2.dylib ] && [ ! -f jlibrary/bin/libj.dylib ]; then
+            cp jlibrary/bin/libjavx2.dylib jlibrary/bin/libj.dylib
+          fi
 
       - name: Bundle GMP for Linux wheel
         if: runner.os == 'Linux'

@@ -265,9 +265,32 @@ JDo 单句限制下暂以向量化达成同等量级收益。）
   sin/cos/tan/ln/log/exp/pi 全部对 mpmath 高精度参考验证有效。
 - 至此每个收敛算子的证书都是数学严格的，无一处拍的近似。
 
+### 第十一轮（2026-11-18）：CI 首跑落地 + 三处真实缺陷修复
+推送 v1.0.0 触发 wheels/tests 首次云端运行，暴露并修复：
+- **运行器标签过期**：macos-14/13 已于 2026-11-02 退役 →
+  macos-15-arm64 / macos-15-intel（注意裸 macos-15 现在是 arm64）。
+- **Python 3.11 大整数位数限制**：int↔str 默认上限 4300 位，
+  引擎读回常带 11521 位分子 → ValueError。tally_ast 导入时
+  set_int_max_str_digits(0) 解除（精确大数正是产品契约）。
+  本地 3.9 无此限制故从未暴露——CI 用 3.11 才抓到。
+- **universal2 解释器 vs 单架构引擎**：CI 的 Python 是 universal2，
+  distutils 自动加 -arch arm64 -arch x86_64，但引擎只有单架构 →
+  ld: library 'j' not found。setup.py 按 lipo -archs 引擎实际架构
+  编译扩展。
+- **sdist 不完整**：numpy 在元数据期被导入 + README_TALLY.md 未入包。
+  懒加载 numpy include、MANIFEST.in、long_description 缺省兜底。
+- **GMP 内嵌自包含**：改用 jsource 自带 libgmp（仅依赖 libSystem），
+  重写 id/自引用为 @loader_path；59/59 引擎所需符号齐全。
+- 引擎源码固定到本地验证过的提交 ed13864（可复现构建）；
+  补装 nasm（x86_64 SHA 汇编）与 mpmath/sympy（测试依赖）。
+
+首跑结果：Linux x86_64 + aarch64 wheel 构建+冒烟一次通过；
+修复后重跑验证 macOS 双架构与 sdist。
+
 ### 回归
-11 套测试 + solver verify + 124 Tally + 1264 差分全过；
-macOS wheel 隔离 venv 验证（tan 带严格证书）。
+11 套测试 + solver verify + 124 Tally + 1571 差分全过；
+macOS wheel 隔离 venv 验证（tan 带严格证书）；
+3.11 下 11521 位整数往返验证；无 numpy 环境 sdist 元数据生成验证。
 
 ### 待办
-P4 Lean 形式化（需工具链）；wheels.yml 首次 CI 运行验证 Linux 产物。
+P4 Lean 形式化（需工具链）；PyPI 发布（需用户账号）。
