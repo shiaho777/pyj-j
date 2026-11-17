@@ -38,6 +38,13 @@ import sys
 from decimal import Decimal
 from fractions import Fraction
 
+# Python 3.11+ caps int<->str conversion at 4300 digits (CVE-2020-10735
+# mitigation). Tally's whole contract is exact bignum rationals -- engine
+# readback routinely carries 10k+ digit numerators -- so lift the cap for
+# this process. 0 = unlimited. No-op on 3.9/3.10.
+if hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits(0)
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 # In the wheel, libj + profile.ijs sit NEXT TO this module (bundled by
 # setup.py). In a source checkout they live in ../jlibrary/bin.

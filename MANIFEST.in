@@ -1,0 +1,4 @@
+include README.md README_TALLY.md TALLY.md VISION.md
+include LICENSE LICENSE-jsource.txt
+include pyj.c
+recursive-include tally_pkg *.py

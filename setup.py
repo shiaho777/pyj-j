@@ -47,8 +47,26 @@ def _python_include():
 
 
 def _numpy_include():
-    import numpy
-    return numpy.get_include()
+    # sdist metadata generation must not require numpy: the include path is
+    # only needed when actually compiling pyj.c.
+    try:
+        import numpy
+        return numpy.get_include()
+    except ImportError:
+        return ""
+
+
+def _engine_archs():
+    """Architecture slices of the built libj.dylib (macOS only)."""
+    libj = os.path.join(LIBDIR, "libj.dylib")
+    if sys.platform != "darwin" or not os.path.isfile(libj):
+        return []
+    try:
+        out = subprocess.check_output(["lipo", "-archs", libj],
+                                      text=True).strip()
+        return out.split()
+    except Exception:
+        return []
 
 
 class BuildExtWithEngine(build_ext):
@@ -64,6 +82,15 @@ class BuildExtWithEngine(build_ext):
                 "-Wl,-undefined,dynamic_lookup",
                 "-Wl,-headerpad_max_install_names",
             ]
+            # A universal2 interpreter makes distutils add -arch arm64
+            # -arch x86_64, but the engine we link against is single-arch
+            # on CI runners -> "ld: library 'j' not found" for the missing
+            # slice. Build the extension for exactly the engine's archs.
+            archs = _engine_archs()
+            if archs:
+                for a in archs:
+                    ext.extra_compile_args += ["-arch", a]
+                    ext.extra_link_args += ["-arch", a]
         elif sys.platform.startswith("linux"):
             ext.extra_link_args = ["-Wl,-rpath,$ORIGIN",
                                    "-Wl,--enable-new-dtags"]
@@ -174,7 +201,10 @@ setup(
     version="1.0.0",
     description="Exact-arithmetic kernel: every result is an exact integer "
                 "or p/q rational. Floats never enter the engine.",
-    long_description=open(os.path.join(HERE, "README_TALLY.md")).read(),
+    long_description=(open(os.path.join(HERE, "README_TALLY.md")).read()
+                      if os.path.isfile(os.path.join(HERE, "README_TALLY.md"))
+                      else "Exact-arithmetic kernel: integers and p/q "
+                           "rationals, floats never enter the engine."),
     long_description_content_type="text/markdown",
     author="pyj",
     license="GPL-3.0",
