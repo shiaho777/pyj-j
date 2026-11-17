@@ -265,10 +265,10 @@ JDo 单句限制下暂以向量化达成同等量级收益。）
   sin/cos/tan/ln/log/exp/pi 全部对 mpmath 高精度参考验证有效。
 - 至此每个收敛算子的证书都是数学严格的，无一处拍的近似。
 
-### 第十一轮（2026-11-18）：CI 首跑落地 + 三处真实缺陷修复
-推送 v1.0.0 触发 wheels/tests 首次云端运行，暴露并修复：
-- **运行器标签过期**：macos-14/13 已于 2026-11-02 退役 →
-  macos-15-arm64 / macos-15-intel（注意裸 macos-15 现在是 arm64）。
+### 第十一轮（2026-11-18）：CI 首跑落地 + 五处真实缺陷修复
+推送 v1.0.0 触发 wheels/tests 首次云端运行，经五轮迭代全部修复：
+- **运行器标签**：macos-14/13 已退役；且 `macos-15-arm64` 是镜像名
+  不是有效标签（永久排队）→ arm64 用 `macos-15`、x64 用 `macos-15-intel`。
 - **Python 3.11 大整数位数限制**：int↔str 默认上限 4300 位，
   引擎读回常带 11521 位分子 → ValueError。tally_ast 导入时
   set_int_max_str_digits(0) 解除（精确大数正是产品契约）。
@@ -276,21 +276,36 @@ JDo 单句限制下暂以向量化达成同等量级收益。）
 - **universal2 解释器 vs 单架构引擎**：CI 的 Python 是 universal2，
   distutils 自动加 -arch arm64 -arch x86_64，但引擎只有单架构 →
   ld: library 'j' not found。setup.py 按 lipo -archs 引擎实际架构
-  编译扩展。
+  编译扩展；且 macOS Intel 的 cpbin 只产 libjavx2.dylib，需别名
+  为 libj.dylib（与 Linux .so 别名同理）。
+- **wheel 平台标签过高**：jsource 自带 libgmp 的 x86_64 切片
+  minos=26.0（在 macOS 26 主机编译），bdist_wheel 取最高 minos →
+  标签 macosx_26_0，macOS 15 运行器 pip 拒装。用 vtool 把每个
+  内嵌二进制的全部架构切片 minos 降到 MACOSX_DEPLOYMENT_TARGET
+  （GMP 仅用长期稳定的 libSystem API，降标安全），再重签名。
 - **sdist 不完整**：numpy 在元数据期被导入 + README_TALLY.md 未入包。
   懒加载 numpy include、MANIFEST.in、long_description 缺省兜底。
 - **GMP 内嵌自包含**：改用 jsource 自带 libgmp（仅依赖 libSystem），
   重写 id/自引用为 @loader_path；59/59 引擎所需符号齐全。
 - 引擎源码固定到本地验证过的提交 ed13864（可复现构建）；
-  补装 nasm（x86_64 SHA 汇编）与 mpmath/sympy（测试依赖）。
+  补装 nasm（x86_64 SHA 汇编）与 mpmath/sympy（测试依赖）；
+  tests 加 workflow_dispatch 便于手动重跑。
 
-首跑结果：Linux x86_64 + aarch64 wheel 构建+冒烟一次通过；
-修复后重跑验证 macOS 双架构与 sdist。
+**最终云端结果（commit 2b77ada/c35bd8a）**：
+- wheels 工作流 **5/5 全绿**：macOS arm64 + macOS Intel +
+  Linux x86_64 + Linux aarch64 + sdist，每平台干净 venv 冒烟
+  （0.1+0.2=3/10、pi@60 certified）全部通过。
+- tests 工作流：Linux **全绿**（9 套 ALL OK + 631 差分 +
+  solver 300/300 + 19 场景门禁）；macOS 全量测试因免费层
+  arm64 运行器容量两次排队超时被取消（非配置问题——同提交
+  wheels 的 macOS arm64 腿已成功跑通冒烟）。
 
 ### 回归
-11 套测试 + solver verify + 124 Tally + 1571 差分全过；
+11 套测试 + solver verify + 124 Tally + 1571 差分全过（本地）；
 macOS wheel 隔离 venv 验证（tan 带严格证书）；
-3.11 下 11521 位整数往返验证；无 numpy 环境 sdist 元数据生成验证。
+3.11 下 11521 位整数往返验证；无 numpy 环境 sdist 元数据生成验证；
+云端四平台 wheel 构建+冒烟全绿。
 
 ### 待办
-P4 Lean 形式化（需工具链）；PyPI 发布（需用户账号）。
+P4 Lean 形式化（需工具链）；PyPI 发布（需用户账号）；
+macOS 全量测试套件云端重跑（待 arm64 运行器容量，或付费层）。
