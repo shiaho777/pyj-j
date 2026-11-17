@@ -146,6 +146,31 @@ class BuildExtWithEngine(build_ext):
             for old in ("/opt/homebrew/opt/gmp/lib/libgmp.10.dylib",
                         "/usr/local/opt/gmp/lib/libgmp.10.dylib"):
                 _tool("-change", old, "@loader_path/libgmp.dylib", libgmp)
+
+        # bdist_wheel derives the platform tag from the HIGHEST LC_BUILD_VERSION
+        # minos across all bundled Mach-O files. jsource's vendored libgmp has
+        # minos 26.0 on its x86_64 slice (built on a macOS 26 host), which would
+        # tag the wheel macosx_26_0 and make pip refuse it on macOS 15 runners
+        # and older user machines. The library only uses long-stable libSystem
+        # APIs, so clamp every bundled binary's minos to the deployment target.
+        target = os.environ.get("MACOSX_DEPLOYMENT_TARGET", "11.0")
+        for f in (libj, libgmp, ext_path):
+            if not os.path.isfile(f):
+                continue
+            # clamp EVERY arch slice of THIS file (the vendored libgmp is a
+            # fat x86_64+arm64 binary even when the engine is single-arch).
+            try:
+                archs = subprocess.check_output(
+                    ["lipo", "-archs", f], text=True).strip().split()
+            except Exception:
+                archs = []
+            for arch in archs:
+                subprocess.run(
+                    ["vtool", "-arch", arch,
+                     "-set-build-version", "macos", target, target,
+                     "-replace", "-output", f, f],
+                    check=False, capture_output=True)
+
         old = os.path.join(LIBDIR, "libj.dylib")
         _tool("-change", old, "@loader_path/libj.dylib", ext_path)
         _tool("-change", "libj.dylib", "@loader_path/libj.dylib", ext_path)
